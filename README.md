@@ -1,7 +1,7 @@
-# rtmp_stream
+# rtmp_streaming
 
 ## 📖 Overview
-`rtmp_stream` is a Flutter plugin designed to provide unified RTMP streaming and video recording capabilities for **Android** and **iOS**.  
+`rtmp_streaming` is a Flutter plugin designed to provide unified RTMP streaming and video recording capabilities for **Android** and **iOS**.  
 It addresses the lack of suitable Flutter RTMP plugins on pub.dev: existing plugins are either no longer maintained or rely on outdated dependencies, making them unsuitable for modern mobile applications.
 
 ---
@@ -10,7 +10,7 @@ It addresses the lack of suitable Flutter RTMP plugins on pub.dev: existing plug
 - **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.7.1`](https://github.com/pedroSG94/RootEncoder)  
 - **iOS**: Based on [HaishinKit 2.2.5](https://github.com/shogo4405/HaishinKit.swift)  
 
-By leveraging these mature libraries, `rtmp_stream` provides a consistent cross-platform API interface, reducing development complexity.
+By leveraging these mature libraries, `rtmp_streaming` provides a consistent cross-platform API interface, reducing development complexity.
 
 ---
 
@@ -20,7 +20,7 @@ By leveraging these mature libraries, `rtmp_stream` provides a consistent cross-
   - Long-term lack of maintenance.  
   - Outdated dependencies, incompatible with the latest Flutter and platform SDKs.  
 
-Therefore, the goal of `rtmp_stream` is to deliver a **modern, stable, and maintainable** RTMP streaming solution.
+Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and maintainable** RTMP streaming solution.
 
 ---
 
@@ -71,7 +71,7 @@ Android provides additional features during live streaming:
 - ▶️ Resume recording: `resumeVideoRecording`  
 - 🎨 Apply filter: `setFilter`  
   > Filter `type` values correspond to filters defined in source code:  
-  > [CameraNativeView.kt](https://github.com/whevether/flutter_rtmp_broadcaster/blob/main/android/src/main/kotlin/com/app/rtmp_stream/CameraNativeView.kt)  
+  > [CameraNativeView.kt](https://github.com/whevether/flutter_rtmp_broadcaster/blob/main/android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt)  
 - ❌ Remove filter: `removeFilter`  
 - 🎨 BT.709 encoding hint: `setForceBt709Color` (RootEncoder 2.7.0+)  
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+)  
@@ -134,5 +134,5 @@ await controller.startVideoStreaming(url);
 ---
 
 ## 🚀 Conclusion
-`rtmp_stream` provides Flutter developers with a cross-platform, modern RTMP streaming and video recording plugin, addressing the shortcomings of the current ecosystem.  
+`rtmp_streaming` provides Flutter developers with a cross-platform, modern RTMP streaming and video recording plugin, addressing the shortcomings of the current ecosystem.  
 It is built on Android’s RootEncoder and iOS’s HaishinKit, offering a unified API while extending playback and audio/video controls on iOS, and snapshot and filter features on Android—helping developers quickly build live streaming and recording applications.

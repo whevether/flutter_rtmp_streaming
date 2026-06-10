@@ -1,14 +1,10 @@
 package com.app.rtmp_stream
 
 import android.app.Activity
-import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.hardware.camera2.CameraAccessException
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CameraMetadata
 import android.media.MediaPlayer
 import android.os.Build
 import com.pedro.encoder.input.gl.render.filters.BaseFilterRender
@@ -65,7 +61,6 @@ import com.pedro.encoder.input.gl.render.filters.`object`.ImageObjectFilterRende
 import com.pedro.encoder.input.gl.render.filters.`object`.SurfaceFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.TextObjectFilterRender
 import com.pedro.encoder.input.video.CameraHelper.Facing.BACK
-import com.pedro.encoder.input.video.CameraHelper.Facing.FRONT
 import com.pedro.encoder.utils.gl.AspectRatioMode
 import com.pedro.encoder.utils.gl.TranslateTo
 import com.pedro.library.rtmp.RtmpCamera2
@@ -102,6 +97,12 @@ class CameraNativeView(
     private var forceBt709Color: Boolean = false
     /** RootEncoder 2.7.0+：RTMP 周期 ping，用于 RTT（须在与 startStream 前对 RtmpStreamClient 设置） */
     private var rtmpShouldSendPings: Boolean = false
+    /** 切后台前正在推流时，Surface 重建后自动恢复 */
+    private var lastStreamUrl: String? = null
+    private var lastStreamBitrate: Int? = null
+    private var resumeStreamAfterSurfaceCreated = false
+    /** 因 Surface 销毁暂停推流时，忽略 stopStream 触发的 onDisconnect */
+    private var isRestoringFromSurfaceDestroy = false
     init {
 //        glView.isKeepAspectRatio = true
         glView.setAspectRatioMode(AspectRatioMode.Adjust)
@@ -119,9 +120,7 @@ class CameraNativeView(
     override fun surfaceCreated(holder: SurfaceHolder) {
         Log.d("CameraNativeView", "surfaceCreated")
         isSurfaceCreated = true
-        if (!rtmpCamera.isOnPreview) {
-            startPreview(cameraName)
-        }
+        glView.post { restorePreviewAfterSurfaceChange() }
     }
 
     override fun surfaceChanged(p0: SurfaceHolder, p1: Int, p2: Int, p3: Int) {
@@ -129,12 +128,26 @@ class CameraNativeView(
     }
 
     override fun surfaceDestroyed(p0: SurfaceHolder) {
-        // TODO("Not yet implemented")
+        Log.d("CameraNativeView", "surfaceDestroyed")
+        if (rtmpCamera.isStreaming) {
+            resumeStreamAfterSurfaceCreated = true
+            isRestoringFromSurfaceDestroy = true
+            try {
+                rtmpCamera.stopStream()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stopStream on surfaceDestroyed failed", e)
+                isRestoringFromSurfaceDestroy = false
+                resumeStreamAfterSurfaceCreated = false
+            }
+        }
         if (rtmpCamera.isOnPreview) {
-            rtmpCamera.stopPreview()
+            try {
+                rtmpCamera.stopCamera()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stopCamera on surfaceDestroyed failed", e)
+            }
         }
         isSurfaceCreated = false
-        activity = null
     }
 
     override fun onConnectionStarted(url: String) {
@@ -144,6 +157,7 @@ class CameraNativeView(
     }
 
     override fun onConnectionSuccess() {
+        isRestoringFromSurfaceDestroy = false
         activity?.runOnUiThread {
             dartMessenger?.send(DartMessenger.EventType.SUCCESS, "connection success")
         }
@@ -160,12 +174,17 @@ class CameraNativeView(
                 dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
             } else {
                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
+                isRestoringFromSurfaceDestroy = false
                 rtmpCamera.stopStream()
             }
         }
     }
 
     override fun onDisconnect() {
+        if (isRestoringFromSurfaceDestroy) {
+            Log.d("CameraNativeView", "onDisconnect ignored during surface restore")
+            return
+        }
         activity?.runOnUiThread {
             dartMessenger?.sendCameraClosingEvent()
         }
@@ -268,7 +287,9 @@ class CameraNativeView(
 
         try {
             if (!rtmpCamera.isStreaming) {
-                val streamingSize = CameraUtils.computeBestPreviewSize(activity, cameraName, preset)
+                lastStreamUrl = url
+                lastStreamBitrate = bitrate
+                val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
                 val size = streamingSize["size"] as Size
                 val bitrateRes = streamingSize["bitrate"] as Int
                 rtmpCamera.forceBt709Color(forceBt709Color)
@@ -365,6 +386,7 @@ class CameraNativeView(
             return
           }
           rtmpCamera.switchCamera(cameraId)
+          cameraName = cameraId
           result.success(null)
         } catch (e: CameraAccessException) {
             result.error("switchCameraFailed", e.message, null)
@@ -801,6 +823,10 @@ class CameraNativeView(
 
     fun stopVideoRecordingOrStreaming(result: MethodChannel.Result) {
         try {
+            resumeStreamAfterSurfaceCreated = false
+            isRestoringFromSurfaceDestroy = false
+            lastStreamUrl = null
+            lastStreamBitrate = null
             rtmpCamera.apply {
                 if (isStreaming) stopStream()
                 if (isRecording) stopRecord()
@@ -828,6 +854,10 @@ class CameraNativeView(
 
     fun stopVideoStreaming(result: MethodChannel.Result) {
         try {
+            resumeStreamAfterSurfaceCreated = false
+            isRestoringFromSurfaceDestroy = false
+            lastStreamUrl = null
+            lastStreamBitrate = null
             rtmpCamera.apply { 
                 if (isStreaming) stopStream()
             }
@@ -875,7 +905,7 @@ class CameraNativeView(
 
     }
 
-    fun startPreview(cameraNameArg: String? = null) {
+    fun startPreview(cameraNameArg: String? = null): Boolean {
         val targetCamera = if (cameraNameArg.isNullOrEmpty()) {
             cameraName
         } else {
@@ -883,29 +913,97 @@ class CameraNativeView(
         }
         cameraName = targetCamera
 
-        Log.d("CameraNativeView", "startPreview: $preset")
-        if (isSurfaceCreated) {
-            try {
-//                Log.d("error", targetCamera)
-                val previewSize = CameraUtils.computeBestPreviewSize(activity, cameraName, preset)
-                val size = previewSize["size"] as Size
-                rtmpCamera.startPreview(
-                    if (isFrontFacing(targetCamera)) FRONT else BACK,
-                    size.width,
-                    size.height
+        Log.d("CameraNativeView", "startPreview: $preset camera=$targetCamera")
+        if (!isSurfaceCreated) {
+            return false
+        }
+        return try {
+            val previewSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
+            val size = previewSize["size"] as Size
+            rtmpCamera.startPreview(targetCamera, size.width, size.height)
+            true
+        } catch (e: CameraAccessException) {
+            close()
+            getActivity()?.runOnUiThread {
+                dartMessenger?.send(
+                    DartMessenger.EventType.ERROR,
+                    "CameraAccessException"
                 )
-            } catch (e: CameraAccessException) {
-                close()
-                activity?.runOnUiThread {
-                    dartMessenger?.send(
-                        DartMessenger.EventType.ERROR,
-                        "CameraAccessException"
-                    )
-                }
-                return
+            }
+            false
+        } catch (e: Exception) {
+            Log.e("CameraNativeView", "startPreview failed", e)
+            getActivity()?.runOnUiThread {
+                dartMessenger?.send(
+                    DartMessenger.EventType.ERROR,
+                    e.message ?: "startPreview failed"
+                )
+            }
+            false
+        }
+    }
+
+    private fun restorePreviewAfterSurfaceChange() {
+        if (!isSurfaceCreated) {
+            return
+        }
+        if (resumeStreamAfterSurfaceCreated && lastStreamUrl != null) {
+            resumeStreamAfterSurfaceChange()
+            return
+        }
+        if (rtmpCamera.isOnPreview) {
+            try {
+                rtmpCamera.stopCamera()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stopCamera before restore failed", e)
             }
         }
+        startPreview(cameraName)
+    }
 
+    private fun resumeStreamAfterSurfaceChange() {
+        val url = lastStreamUrl ?: run {
+            resumeStreamAfterSurfaceCreated = false
+            isRestoringFromSurfaceDestroy = false
+            return
+        }
+        resumeStreamAfterSurfaceCreated = false
+        try {
+            if (rtmpCamera.isOnPreview) {
+                rtmpCamera.stopCamera()
+            }
+            val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
+            val size = streamingSize["size"] as Size
+            val bitrateRes = lastStreamBitrate ?: (streamingSize["bitrate"] as Int)
+            rtmpCamera.forceBt709Color(forceBt709Color)
+            (rtmpCamera.streamClient as? RtmpStreamClient)?.shouldSendPings(rtmpShouldSendPings)
+            val prepared = rtmpCamera.prepareAudio() && rtmpCamera.prepareVideo(
+                size.width,
+                size.height,
+                bitrateRes
+            )
+            if (rtmpCamera.isRecording || prepared) {
+                Log.d("CameraNativeView", "resumeStreamAfterSurfaceChange: $url")
+                rtmpCamera.startStream(url)
+            } else {
+                isRestoringFromSurfaceDestroy = false
+                getActivity()?.runOnUiThread {
+                    dartMessenger?.send(
+                        DartMessenger.EventType.RTMP_STOPPED,
+                        "Failed to resume stream after background"
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("CameraNativeView", "resumeStreamAfterSurfaceChange failed", e)
+            isRestoringFromSurfaceDestroy = false
+            getActivity()?.runOnUiThread {
+                dartMessenger?.send(
+                    DartMessenger.EventType.RTMP_STOPPED,
+                    e.message ?: "Failed to resume stream after background"
+                )
+            }
+        }
     }
 
     fun getStreamStatistics(result: MethodChannel.Result) {
@@ -955,15 +1053,16 @@ class CameraNativeView(
 
     override fun dispose() {
         isSurfaceCreated = false
+        resumeStreamAfterSurfaceCreated = false
+        isRestoringFromSurfaceDestroy = false
+        lastStreamUrl = null
+        lastStreamBitrate = null
+        if (rtmpCamera.isOnPreview) {
+            rtmpCamera.stopCamera()
+        }
         activity = null
     }
 
-    private fun isFrontFacing(cameraName: String): Boolean {
-        val cameraManager = activity?.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
-        if (cameraManager == null) {
-            throw Exception("相机是空的")
-        }
-        val characteristics = cameraManager.getCameraCharacteristics(cameraName)
-        return characteristics.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT
-    }
+    /** Activity 在 surfaceDestroyed 后仍有效；若引用丢失则用 glView 的 Context 兜底。 */
+    private fun getActivity(): Activity? = activity ?: glView.context as? Activity
 }

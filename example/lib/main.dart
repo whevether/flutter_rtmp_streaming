@@ -51,7 +51,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   bool isFlashLight = false; // false表示关闭闪光灯，true表示打开闪光灯
   CameraDescription? _cameraDesc;
   final TextEditingController _textFieldController =
-      TextEditingController(text: "rtmp://192.168.1.15/live/live");
+      TextEditingController(text: "rtmp://grafana.imchat.love/live/live");
 
   /// RootEncoder 2.7.0+：BT.709 与 RTMP ping/RTT 示例
   bool _forceBt709 = false;

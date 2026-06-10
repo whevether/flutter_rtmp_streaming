@@ -433,6 +433,17 @@ class CameraController extends ValueNotifier<CameraValue> {
             isStreamingVideoRtmp: false,
             event: uniEvent);
         break;
+      case 'success':
+        value = value.copyWith(
+            errorDescription: errorDescription,
+            isStreamingVideoRtmp: true,
+            isStreamingPaused: false,
+            event: uniEvent);
+        break;
+      case 'wait':
+        value =
+            value.copyWith(errorDescription: errorDescription, event: uniEvent);
+        break;
       default:
         value =
             value.copyWith(errorDescription: errorDescription, event: uniEvent);

@@ -44,7 +44,7 @@
 
 
 
-## 1.0.4
+## 1.0.5
 1. 更新 HaishinKit.swift 到 2.2.5 修复 xcode 26.4 编译错误
 2. 更新 com.github.pedroSG94.RootEncoder 到 2.7.1
 3. **文档**：在 README / README_zhCN 中补充以下 `CameraController` 的用法说明：

@@ -183,6 +183,7 @@ class MethodCallHandlerImplNew(
                 if (view != null) {
                     // stopVideoStreaming calls result.success/error - do NOT call result again
                     view.stopVideoStreaming(result)
+                    view.dispose()
                 } else {
                     result.success(null)
                 }

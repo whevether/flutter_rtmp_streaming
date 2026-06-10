@@ -16,7 +16,7 @@ subprojects {
             extensions.configure<com.android.build.gradle.BaseExtension> {
                 compileSdkVersion(36)
                 buildToolsVersion = "36.1.0"
-                ndkVersion = "29.0.14206865" 
+                ndkVersion = "30.0.14904198" 
                 if (namespace == null) {
                     namespace = project.group.toString()
                 }

@@ -42,7 +42,7 @@
 ## 1.0.3
 1. fix android permission bug
 
-## 1.0.4
+## 1.0.5
 1. update HaishinKit.swift to 2.2.5 fix xcode 26.4 build error
 2. update com.github.pedroSG94.RootEncoder to 2.7.1
 
