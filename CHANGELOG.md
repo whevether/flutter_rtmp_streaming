@@ -54,3 +54,4 @@
 
 ## 1.0.6
 1. fix android issue  #8 question
+2. update package name

@@ -1,4 +1,4 @@
-package com.app.rtmp_stream
+package com.app.rtmp_streaming
 
 import android.app.Activity
 import android.content.Context
@@ -13,7 +13,7 @@ import android.util.Log
 import android.util.Size
 import android.view.OrientationEventListener
 import androidx.annotation.RequiresApi
-import com.app.rtmp_stream.CameraPermissions.ResolutionPreset
+import com.app.rtmp_streaming.CameraPermissions.ResolutionPreset
 import io.flutter.plugin.common.*
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.platform.PlatformViewRegistry

@@ -1,4 +1,4 @@
-package com.app.rtmp_stream
+package com.app.rtmp_streaming
 
 import android.app.Activity
 import android.graphics.Bitmap
@@ -14,7 +14,7 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.View
 import androidx.annotation.RequiresApi
-import com.app.rtmp_stream.CameraPermissions.ResolutionPreset
+import com.app.rtmp_streaming.CameraPermissions.ResolutionPreset
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.gl.SpriteGestureController
 import com.pedro.encoder.input.gl.render.filters.BasicDeformationFilterRender

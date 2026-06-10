@@ -10,7 +10,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:rtmp_streaming/camera.dart';
+import 'package:rtmp_streaming/rtmp_streaming.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 class CameraExampleHome extends StatefulWidget {

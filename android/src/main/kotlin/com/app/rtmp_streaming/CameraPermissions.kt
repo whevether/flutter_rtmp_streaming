@@ -1,4 +1,4 @@
-package com.app.rtmp_stream
+package com.app.rtmp_streaming
 
 import android.app.Activity
 import androidx.core.app.ActivityCompat

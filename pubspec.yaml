@@ -34,7 +34,7 @@ flutter:
   plugin:
     platforms:
       android:
-        package: com.app.rtmp_stream
+        package: com.app.rtmp_streaming
         pluginClass: RtmppublisherPlugin
       ios:
         pluginClass: HaishinKitPlugin

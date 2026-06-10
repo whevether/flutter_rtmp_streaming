@@ -1,8 +1,8 @@
-package com.app.rtmp_stream
+package com.app.rtmp_streaming
 
 import android.app.Activity
 import android.content.Context
-import com.app.rtmp_stream.CameraPermissions.ResolutionPreset
+import com.app.rtmp_streaming.CameraPermissions.ResolutionPreset
 import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
