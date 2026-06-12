@@ -1,7 +1,7 @@
 name: rtmp_streaming
 description: A Flutter plugin for Camera and Microphone streaming library via RTMP.
 version: 1.0.6
-homepage: https://github.com/whevether/flutter_rtmp_broadcaster
+homepage: https://github.com/whevether/flutter_rtmp_streaming
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
