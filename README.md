@@ -7,8 +7,8 @@ It addresses the lack of suitable Flutter RTMP plugins on pub.dev: existing plug
 ---
 
 ## ⚙️ Technical Foundation
-- **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.7.1`](https://github.com/pedroSG94/RootEncoder)  
-- **iOS**: Based on [HaishinKit 2.2.5](https://github.com/shogo4405/HaishinKit.swift)  
+- **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.7.5`](https://github.com/pedroSG94/RootEncoder)  
+- **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)  
 
 By leveraging these mature libraries, `rtmp_streaming` provides a consistent cross-platform API interface, reducing development complexity.
 
@@ -29,6 +29,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 ### 🌍 Common Methods (Android & iOS)
 - 📷 Get available cameras: `availableCameras`  
 - ⚙️ Initialize plugin: `initialize`  
+- 🎬 Prepare for streaming (optional, recommended on iOS): `prepareForVideoStreaming`  
 - 🎥 Start local video recording: `startVideoRecording`  
 - ⏹️ Stop local video recording: `stopRecording`  
 - 📡 Start recording and streaming: `startVideoRecordingAndStreaming`  
@@ -36,96 +37,198 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 - 📡 Start video streaming: `startVideoStreaming`  
 - ⏹️ Stop video streaming: `stopStreaming`  
 - 🔄 Switch camera: `switchCamera`  
-- 🔊 Toggle audio on/off: `switchAudio`  
-- 💡 Toggle flashlight on/off: `switchFlashLight`  
-- 📊 Get stream statistics: `getStreamStatistics`  
+- 🔊 Toggle mic capture on/off: `switchAudio`  
+- 🔇 Temporary mute while streaming: `getHasAudio` / `setHasAudio`  
+- 🎥 Temporary video mute while streaming: `getHasVideo` / `setHasVideo`  
+- 🎚️ Audio bitrate: `setAudioSettings`  
+- 🎞️ Video encoder settings: `setVideoSettings`  
+- 🎬 Frame rate: `setFrameRate`  
+- 💡 Toggle flashlight: `switchFlashLight`  
+- 📊 Stream statistics: `getStreamStatistics`  
 - 🗑️ Dispose plugin: `dispose`  
-- 📸 Take snapshot during streaming: `takePicture`  
+- 📸 Snapshot while streaming: `takePicture`  
 
 ---
 
 ### 🍎 iOS Exclusive Methods
-Since HaishinKit supports not only streaming but also **RTMP playback**, iOS provides additional features:
+Since HaishinKit supports RTMP **playback** as well as publishing:
 
-- ⏸️ Pause stream playback: `pauseStream`  
-  > Note: This pauses playback, not streaming.  
-- ▶️ Resume stream playback: `resumeStream`  
-  > Note: This resumes playback, not streaming.  
-- 🎚️ Set audio bitrate: `setAudioSettings`  
-- 🎞️ Set video settings: `setVideoSettings` (optional `expectedFrameRate`, `bitRateMode` — HaishinKit 2.2.1+ / 2.2.2+)  
-- 📱 Multitasking camera access: `setMultitaskingCameraAccessEnabled` (HaishinKit 2.2.5+, iOS 17+ when supported)  
-- 🔊 Get temporary mute status: `getHasAudio`  
-- 🔊 Set temporary mute: `setHasAudio`  
-- 🎥 Get temporary video stop status: `getHasVideo`  
-- 🎥 Set temporary video stop: `setHasVideo`  
-- 🎬 Set streaming frame rate: `setFrameRate`  
-- ⚙️ Set session preset: `setSessionPreset`  
-- 🖼️ Set screen dimensions: `setScreenSettings`  
+- ⏸️ Pause stream playback: `pauseVideoStreamPlay` (`pauseStream`)  
+  > Note: pauses **playback**, not publishing.  
+- ▶️ Resume stream playback: `resumeVideoStreamPlay` (`resumeStream`)  
+- 📱 Multitasking camera: `setMultitaskingCameraAccessEnabled` (HaishinKit 2.2.5+, iOS 17+ when supported)  
+- ⚙️ Session preset: `setSessionPreset`  
+- 🖼️ Screen dimensions: `setScreenSettings`  
+- 🎞️ `setVideoSettings` extras: `expectedFrameRate`, `bitRateMode` (2.2.1+ / 2.2.2+), `profileLevel`  
 
 ---
 
 ### 🤖 Android Exclusive Methods
-Android provides additional features during live streaming:
-
 - ⏸️ Pause recording: `pauseVideoRecording`  
 - ▶️ Resume recording: `resumeVideoRecording`  
-- 🎨 Apply filter: `setFilter`  
-  > Filter `type` values correspond to filters defined in source code:  
-  > [CameraNativeView.kt](https://github.com/whevether/flutter_rtmp_broadcaster/blob/main/android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt)  
+- 🎨 Apply filter: `setFilter` — see [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt) for `type` values  
 - ❌ Remove filter: `removeFilter`  
-- 🎨 BT.709 encoding hint: `setForceBt709Color` (RootEncoder 2.7.0+)  
+- 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+)  
 
 ---
 
-## 📘 Extended API usage (platform-specific)
+## 📘 API Usage
 
-### Android: `setForceBt709Color(bool enabled)`
-- **What it does**: Tells the video encoder to use a BT.709 color matrix for encoded video, which can align colors with players or servers that expect BT.709 for HD content.
-- **When to call**: After `initialize`, before starting recording or streaming (or before the next `prepare` path). The plugin applies the flag when preparing video for record/stream.
-- **Example**:
+### Recommended streaming flow (cross-platform)
+
 ```dart
-await controller.setForceBt709Color(true);
+final cameras = await availableCameras();
+final controller = CameraController(
+  ResolutionPreset.high,
+  enableAudio: true,
+);
+
+await controller.initialize(cameras.first);
+
+// iOS: pre-attach audio to reduce start latency
+await controller.prepareForVideoStreaming();
+
+await controller.setAudioSettings(128 * 1024); // bps
+await controller.setVideoSettings(bitrate: 1500 * 1024);
+await controller.setFrameRate(30);
+
+if (Platform.isAndroid) {
+  await controller.setForceBt709Color(true);
+  await controller.setRtmpShouldSendPings(true);
+}
+
+if (Platform.isIOS) {
+  await controller.setMultitaskingCameraAccessEnabled(true);
+  await controller.setVideoSettings(
+    expectedFrameRate: 30,
+    bitRateMode: 'average',
+  );
+}
+
+await controller.startVideoStreaming('rtmp://your-server/live/stream-key');
+```
+
+---
+
+### `prepareForVideoStreaming()`
+- **Purpose**: Pre-warm the capture session for streaming. On iOS, attaches audio early; on Android, no-op (safe to call for shared code).
+- **When**: After `initialize`, before `startVideoStreaming`.
+
+---
+
+### `switchAudio` vs `setHasAudio`
+
+| Method | Behavior | Use case |
+|--------|----------|----------|
+| `switchAudio(false)` | Detach / re-attach mic capture | Fully stop mic input |
+| `setHasAudio(false)` | **Temporary mute** while still capturing | Quick mute without teardown |
+
+```dart
+await controller.setHasAudio(false);
+final sending = await controller.getHasAudio(); // false
+
+await controller.switchAudio(false);
+```
+
+---
+
+### `getHasVideo` / `setHasVideo`
+- **Purpose**: Temporarily stop or resume sending video while streaming.
+- **Platform**: Android sends black frames via OpenGL; iOS uses mixer video mute.
+- **When**: While streaming.
+
+```dart
+await controller.setHasVideo(false);
+final hasVideo = await controller.getHasVideo();
+await controller.setHasVideo(true);
+```
+
+---
+
+### `setAudioSettings(int bitrate)`
+- **Purpose**: AAC encoder bitrate in **bps**.
+- **When**: After `initialize`, before starting stream/record.
+
+```dart
+await controller.setAudioSettings(128 * 1024);
 await controller.startVideoStreaming(url);
 ```
 
-### Android: `setRtmpShouldSendPings(bool enabled)`
-- **What it does**: Enables RTMP ping commands so the server can respond with pong; the client can derive round-trip time (RTT).
-- **When to call**: After `initialize`, **before** `startVideoStreaming` (or combined record+stream). Must be set before connect.
-- **Related**: Use `getStreamStatistics()` while streaming; when pings are enabled and the server supports them, the map includes `rttMicros` (microseconds) and `bytesSend` (where supported).
-- **Example**:
+---
+
+### `setVideoSettings({ ... })`
+
+| Parameter | Cross-platform | Notes |
+|-----------|----------------|-------|
+| `bitrate` | ✅ | Android can hot-update while live via `setVideoBitrateOnFly`. |
+| `width` / `height` | Partial | Prefer before go-live. |
+| `frameInterval` | Mostly iOS | Keyframe interval (seconds). |
+| `profileLevel` | iOS only | H.264 profile/level string. |
+| `expectedFrameRate` | iOS only | RTMP onMetaData `framerate` (2.2.2+). |
+| `bitRateMode` | iOS only | `average` / `constant` (iOS 16+) / `variable` (iOS 26+). |
+
 ```dart
-await controller.setRtmpShouldSendPings(true);
-await controller.startVideoStreaming(url);
-// later, while streaming:
-final stats = await controller.getStreamStatistics();
-// stats.rttMicros, stats.bytesSend, ...
-```
+await controller.setVideoSettings(bitrate: 1200 * 1024);
+await controller.setVideoSettings(bitrate: 800 * 1024); // hot update on Android
 
-### iOS: `setVideoSettings({ ... })`
-Existing parameters: `bitrate`, `width`, `height`, `frameInterval`, `profileLevel` (iOS only).
-
-**HaishinKit 2.2.1+ / 2.2.2+ extensions** (optional named parameters):
-
-| Parameter | Type | Meaning |
-|-----------|------|---------|
-| `expectedFrameRate` | `double?` | Encoder hint; also appears in RTMP **onMetaData** as `framerate` (2.2.2+). |
-| `bitRateMode` | `String?` | `"average"` (default behavior), `"constant"` (iOS 16+), `"variable"` (iOS 26+ / VideoToolbox VBR). |
-
-- **When to call**: After `initialize`, typically before or early during streaming; follow HaishinKit guidance for changing settings while live.
-- **Example**:
-```dart
 await controller.setVideoSettings(
   expectedFrameRate: 30,
   bitRateMode: 'average',
 );
 ```
 
+---
+
+### `setFrameRate(int frameRate)`
+- **Purpose**: Target capture/encode frame rate.
+- **When**: After `initialize`, before streaming.
+
+```dart
+await controller.setFrameRate(30);
+await controller.startVideoStreaming(url);
+```
+
+---
+
+### `getStreamStatistics()`
+Returns `StreamStatistics` while streaming. Key fields:
+
+| Field | Description |
+|-------|-------------|
+| `bitrate`, `fps`, `width`, `height` | Stream metrics |
+| `cacheSize` | Send buffer size |
+| `sentAudioFrames` / `sentVideoFrames` | Android |
+| `droppedAudioFrames` / `droppedVideoFrames` | Android |
+| `isAudioMuted` / `isVideoMuted` | Both platforms (1.0.7+) |
+| `rttMicros` | Android RTT (requires `setRtmpShouldSendPings`) |
+| `bytesSend` | Bytes sent |
+
+```dart
+final stats = await controller.getStreamStatistics();
+```
+
+---
+
+### Android: `setForceBt709Color(bool enabled)`
+```dart
+await controller.setForceBt709Color(true);
+await controller.startVideoStreaming(url);
+```
+
+---
+
+### Android: `setRtmpShouldSendPings(bool enabled)`
+```dart
+await controller.setRtmpShouldSendPings(true);
+await controller.startVideoStreaming(url);
+final stats = await controller.getStreamStatistics();
+print(stats.rttMicros);
+```
+
+---
+
 ### iOS: `setMultitaskingCameraAccessEnabled(bool enabled)`
-- **What it does**: When supported, sets `AVCaptureSession.isMultitaskingCameraAccessEnabled` so capture can continue in multitasking / split-screen / PiP-style scenarios (HaishinKit 2.2.5+).
-- **Requirements**: **iOS 17+** for the underlying configuration API; device must report `isMultitaskingCameraAccessSupported`.
-- **When to call**: After `initialize`, before starting streaming (same session as preview).
-- **Example**:
 ```dart
 await controller.setMultitaskingCameraAccessEnabled(true);
 await controller.startVideoStreaming(url);
@@ -134,5 +237,5 @@ await controller.startVideoStreaming(url);
 ---
 
 ## 🚀 Conclusion
-`rtmp_streaming` provides Flutter developers with a cross-platform, modern RTMP streaming and video recording plugin, addressing the shortcomings of the current ecosystem.  
-It is built on Android’s RootEncoder and iOS’s HaishinKit, offering a unified API while extending playback and audio/video controls on iOS, and snapshot and filter features on Android—helping developers quickly build live streaming and recording applications.
+`rtmp_streaming` provides cross-platform RTMP streaming and recording for Flutter.  
+Since **1.0.7**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; iOS retains playback and multitasking extras, Android retains filters, BT.709, and RTT.

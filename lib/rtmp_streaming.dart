@@ -1,7 +1,7 @@
 // Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-
+//若需要继续扩展，建议优先级：推流中动态码率（Android 已有 BitrateAdapter）、iOS 录制暂停、SRT 协议（双库均支持）
 import 'dart:async';
 import 'dart:io';
 
@@ -130,6 +130,8 @@ class StreamStatistics {
   final int? droppedAudioFrames;
   final int? droppedVideoFrames;
   final bool? isAudioMuted;
+  /// 推流时视频是否被静音（发送黑帧），双端对齐。
+  final bool? isVideoMuted;
   final int? bitrate;
   final int? width;
   final int? height;
@@ -148,6 +150,7 @@ class StreamStatistics {
     required this.width,
     required this.height,
     required this.isAudioMuted,
+    this.isVideoMuted,
     this.fps,
     this.rttMicros,
     this.bytesSend,
@@ -155,7 +158,7 @@ class StreamStatistics {
 
   @override
   String toString() {
-    return 'StreamStatistics{cacheSize: $cacheSize, sentAudioFrames: $sentAudioFrames, sentVideoFrames: $sentVideoFrames, droppedAudioFrames: $droppedAudioFrames, droppedVideoFrames: $droppedVideoFrames, isAudioMuted: $isAudioMuted, bitrate: $bitrate, width: $width, height: $height, fps: $fps, rttMicros: $rttMicros, bytesSend: $bytesSend}';
+    return 'StreamStatistics{cacheSize: $cacheSize, sentAudioFrames: $sentAudioFrames, sentVideoFrames: $sentVideoFrames, droppedAudioFrames: $droppedAudioFrames, droppedVideoFrames: $droppedVideoFrames, isAudioMuted: $isAudioMuted, isVideoMuted: $isVideoMuted, bitrate: $bitrate, width: $width, height: $height, fps: $fps, rttMicros: $rttMicros, bytesSend: $bytesSend}';
   }
 }
 
@@ -619,6 +622,7 @@ class CameraController extends ValueNotifier<CameraValue> {
         width: data["width"] as int?,
         bitrate: data["bitrate"] as int?,
         isAudioMuted: data["isAudioMuted"] as bool?,
+        isVideoMuted: data["isVideoMuted"] as bool?,
         cacheSize: data["cacheSize"] as int?,
         droppedAudioFrames: data["droppedAudioFrames"] as int?,
         droppedVideoFrames: data["droppedVideoFrames"] as int?,
@@ -926,28 +930,21 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// switch Audio
+  /// 切换麦克风采集（detach/attach），推流过程中可用。
   ///
-  /// This switch Audio
-  ///
-  /// Throws a [CameraException] if the capture fails.
+  /// Android：调用 RootEncoder `enableAudio` / `disableAudio`。
+  /// iOS：重新 attach 音频设备（与 [setHasAudio] 的混音静音不同）。
   Future<void> switchAudio(bool isEnable) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
-        'startVideoStreaming was called on uninitialized CameraController',
+        'switchAudio was called on uninitialized CameraController',
       );
     }
     if (!value.isStreamingVideoRtmp!) {
       throw CameraException(
-        'No video is recording',
-        'resumeVideoStreaming was called when no video is streaming.',
-      );
-    }
-    if (!Platform.isAndroid) {
-      throw CameraException(
-        'Currently only supports Android platform',
-        'Please use on Android platform',
+        'No video is streaming',
+        'switchAudio was called when no video is streaming.',
       );
     }
     try {
@@ -1060,19 +1057,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// set Audio Settings
-  /// Only supports ios
+  /// 设置音频编码码率（bps）。须在开始推流/录制前调用；推流中修改需两端原生库支持热更新。
   Future<void> setAudioSettings(int bitrate) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
         'setAudioSettings was called on uninitialized CameraController',
-      );
-    }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'setAudioSettings Only supports Ios.',
       );
     }
     try {
@@ -1085,12 +1075,13 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// set video Settings
+  /// 设置视频编码参数。
   ///
-  /// [expectedFrameRate]：HaishinKit 2.2.2+，写入编码期望帧率并进入 RTMP onMetaData 的 `framerate`。
+  /// [expectedFrameRate]：HaishinKit 2.2.2+，写入编码期望帧率并进入 RTMP onMetaData 的 `framerate`（仅 iOS）。
   ///
-  /// [bitRateMode]：`average`（默认）、`constant`（iOS 16+）、`variable`（iOS 26+，对应 VideoToolbox VBR）。
-  /// Only supports ios
+  /// [bitRateMode]：`average`（默认）、`constant`（iOS 16+）、`variable`（iOS 26+）。
+  ///
+  /// Android：推流中可通过 [bitrate] 调用 `setVideoBitrateOnFly` 热更新码率。
   Future<void> setVideoSettings(
       {int? bitrate,
       int? width,
@@ -1105,12 +1096,6 @@ class CameraController extends ValueNotifier<CameraValue> {
         'setVideoSettings was called on uninitialized CameraController',
       );
     }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'setVideoSettings Only supports Ios.',
-      );
-    }
     try {
       await _channel.invokeMethod<void>(
         'setVideoSettings',
@@ -1119,7 +1104,7 @@ class CameraController extends ValueNotifier<CameraValue> {
           "width": width,
           "height": height,
           "frameInterval": frameInterval,
-          "profileLevel": profileLevel,
+          if (!Platform.isAndroid) "profileLevel": profileLevel,
           if (expectedFrameRate != null) "expectedFrameRate": expectedFrameRate,
           if (bitRateMode != null) "bitRateMode": bitRateMode,
         },
@@ -1155,19 +1140,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Obtain whether to temporarily mute
-  /// Only supports ios
+  /// 推流时是否正在发送音频（false 表示已静音）。
   Future<bool?> getHasAudio() async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
         'getHasAudio was called on uninitialized CameraController',
-      );
-    }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'getHasAudio Only supports Ios.',
       );
     }
     try {
@@ -1180,19 +1158,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Set temporary mute
-  /// Only supports ios
+  /// 推流时临时静音/恢复音频（不 detach 麦克风，与 [switchAudio] 不同）。
   Future<void> setHasAudio(bool isEnable) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
         'setHasAudio was called on uninitialized CameraController',
-      );
-    }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'setHasAudio Only supports Ios.',
       );
     }
     try {
@@ -1205,19 +1176,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Obtain whether to temporarily video
-  /// Only supports ios
+  /// 推流时是否正在发送视频（false 表示已静音/黑帧）。
   Future<bool?> getHasVideo() async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
         'getHasVideo was called on uninitialized CameraController',
-      );
-    }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'getHasVideo Only supports Ios.',
       );
     }
     try {
@@ -1230,19 +1194,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Set temporary Video
-  /// Only supports ios
+  /// 推流时临时停止/恢复发送视频（Android 发送黑帧，iOS 混音静音）。
   Future<void> setHasVideo(bool isEnable) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
         'setHasVideo was called on uninitialized CameraController',
-      );
-    }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'setHasVideo Only supports Ios.',
       );
     }
     try {
@@ -1255,19 +1212,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// set Frame Rate
-  /// Only supports ios
+  /// 设置采集/编码目标帧率。宜在 [initialize] 之后、开始推流前调用。
   Future<void> setFrameRate(int frameRate) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
         'setFrameRate was called on uninitialized CameraController',
-      );
-    }
-    if (!Platform.isIOS) {
-      throw CameraException(
-        'Unsupported platforms.',
-        'setFrameRate Only supports Ios.',
       );
     }
     try {

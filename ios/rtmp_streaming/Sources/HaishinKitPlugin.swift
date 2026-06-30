@@ -49,6 +49,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private var recorderStream: StreamRecorder?
   //重试次数
   private var retries: Int = 0
+  private var enableAudio: Bool = true
   // 插件注册
   private(set) var registrar: FlutterPluginRegistrar?
   
@@ -121,8 +122,19 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     return cameras
   }
   
+  private func prepareForVideoStreaming() async -> FlutterError? {
+    guard let newMixer = mixer else {
+      return FlutterError(code: "prepareForVideoStreamingError", message: "mixer empty", details: nil)
+    }
+    if enableAudio {
+      await newMixer.attachAudio(isEnable: true)
+    }
+    return nil
+  }
+
   //初始化 HaishinKit
   private func initialize(cameraId: String,enableAudio: Bool,resolution: String) async ->[String: Any]?{
+    self.enableAudio = enableAudio
     rtmpConnection = RTMPConnection()
     if let connection = rtmpConnection{
       let stream = RTMPStream(connection: connection)
@@ -382,20 +394,24 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       guard let newRtmpStream = rtmpStream, let newTexture = texture else{
         return [:]
       }
-      var info = await newRtmpStream.info
-      var currentFps = await newRtmpStream.currentFPS
-      var bitRate = await newRtmpStream.videoSettings.bitRate
+      let info = await newRtmpStream.info
+      let currentFps = await newRtmpStream.currentFPS
+      let bitRate = await newRtmpStream.videoSettings.bitRate
+      let hasAudio = await mixer?.getHasAudio() ?? true
+      let hasVideo = await mixer?.getHasVideo() ?? true
       return [
         "fps": currentFps,
         "cacheSize": info.byteCount,
         "width": newTexture.bounds.width,
         "height": newTexture.bounds.height,
-        "bitrate": bitRate,
+        "bitrate": bitRate > 0 ? bitRate : info.currentBytesPerSecond * 8,
+        "bytesSend": info.byteCount,
         "sentAudioFrames": nil,
         "sentVideoFrames": nil,
         "droppedAudioFrames": nil,
         "droppedVideoFrames": nil,
-        "isAudioMuted": nil
+        "isAudioMuted": !hasAudio,
+        "isVideoMuted": !hasVideo
       ]
     }catch{
       return [:]
@@ -524,6 +540,11 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         ))
       }
       
+    case "prepareForVideoStreaming":
+      Task {
+        let res = await prepareForVideoStreaming()
+        result(res)
+      }
     case "takePicture":
       guard
         let arguments = call.arguments as? [String: Any?],

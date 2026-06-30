@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'rtmp_streaming'
-  s.version          = '1.0.6'
+  s.version          = '1.0.7'
   s.summary          = 'A Flutter plugin for Camera and Microphone streaming library via RTMP.'
   s.description      = <<-DESC
 A Flutter plugin for Camera and Microphone streaming library via RTMP for HaishinKit.

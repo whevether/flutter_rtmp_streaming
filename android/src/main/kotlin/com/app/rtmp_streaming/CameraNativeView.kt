@@ -97,6 +97,12 @@ class CameraNativeView(
     private var forceBt709Color: Boolean = false
     /** RootEncoder 2.7.0+：RTMP 周期 ping，用于 RTT（须在与 startStream 前对 RtmpStreamClient 设置） */
     private var rtmpShouldSendPings: Boolean = false
+    /** 自定义音频码率（bps），在 prepareAudio 时使用 */
+    private var customAudioBitrate: Int? = null
+    /** 自定义视频帧率，在 prepareVideo / startPreview 时使用 */
+    private var customVideoFps: Int? = null
+    /** 自定义视频码率（bps），推流中可通过 setVideoBitrateOnFly 热更新 */
+    private var customVideoBitrate: Int? = null
     /** 切后台前正在推流时，Surface 重建后自动恢复 */
     private var lastStreamUrl: String? = null
     private var lastStreamBitrate: Int? = null
@@ -199,6 +205,122 @@ class CameraNativeView(
     override fun onAuthSuccess() {
     }
 
+    private fun prepareAudioEncoder(): Boolean {
+        if (!enableAudio) {
+            return true
+        }
+        val bitrate = customAudioBitrate ?: aBitrate
+        return rtmpCamera.prepareAudio(bitrate, 32000, true)
+    }
+
+    private fun prepareVideoEncoder(size: Size, bitrate: Int): Boolean {
+        val fps = customVideoFps ?: 30
+        return rtmpCamera.prepareVideo(size.width, size.height, fps, bitrate)
+    }
+
+    fun prepareForVideoStreaming(result: MethodChannel.Result) {
+        // Android 无需预准备音频，与 iOS 行为对齐为 no-op
+        result.success(null)
+    }
+
+    fun getHasAudio(result: MethodChannel.Result) {
+        result.success(!rtmpCamera.isAudioMuted)
+    }
+
+    fun setHasAudio(isEnable: Boolean?, result: MethodChannel.Result) {
+        if (isEnable == null) {
+            result.error("setHasAudio", "isEnable is required", null)
+            return
+        }
+        try {
+            if (isEnable) {
+                rtmpCamera.enableAudio()
+            } else {
+                rtmpCamera.disableAudio()
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setHasAudio", e.message, null)
+        }
+    }
+
+    fun getHasVideo(result: MethodChannel.Result) {
+        val muted = rtmpCamera.glInterface?.isVideoMuted ?: false
+        result.success(!muted)
+    }
+
+    fun setHasVideo(isEnable: Boolean?, result: MethodChannel.Result) {
+        if (isEnable == null) {
+            result.error("setHasVideo", "isEnable is required", null)
+            return
+        }
+        try {
+            val gl = rtmpCamera.glInterface
+            if (gl == null) {
+                result.error("setHasVideo", "OpenGL interface not available", null)
+                return
+            }
+            if (isEnable) {
+                gl.unMuteVideo()
+            } else {
+                gl.muteVideo()
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setHasVideo", e.message, null)
+        }
+    }
+
+    fun setAudioSettings(bitrate: Int?, result: MethodChannel.Result) {
+        if (bitrate == null) {
+            result.error("setAudioSettings", "bitrate is required", null)
+            return
+        }
+        customAudioBitrate = bitrate
+        result.success(null)
+    }
+
+    fun setVideoSettings(
+        bitrate: Int?,
+        width: Int?,
+        height: Int?,
+        frameInterval: Int?,
+        result: MethodChannel.Result
+    ) {
+        try {
+            if (bitrate != null) {
+                customVideoBitrate = bitrate
+                if (rtmpCamera.isStreaming) {
+                    rtmpCamera.setVideoBitrateOnFly(bitrate)
+                }
+            }
+            if (frameInterval != null) {
+                // RootEncoder 在推流中修改 I 帧间隔需重新 prepare，此处仅记录供文档说明
+                Log.w("CameraNativeView", "setVideoSettings frameInterval ignored on Android during stream")
+            }
+            if (width != null && height != null && !rtmpCamera.isStreaming) {
+                Log.w("CameraNativeView", "setVideoSettings width/height apply on next startVideoStreaming")
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setVideoSettings", e.message, null)
+        }
+    }
+
+    fun setFrameRate(frameRate: Int?, result: MethodChannel.Result) {
+        if (frameRate == null || frameRate <= 0) {
+            result.error("setFrameRate", "frameRate must be > 0", null)
+            return
+        }
+        customVideoFps = frameRate
+        try {
+            rtmpCamera.glInterface?.forceFpsLimit(frameRate)
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setFrameRate", e.message, null)
+        }
+    }
+
     fun close() {
         Log.d("CameraNativeView", "close")
     }
@@ -256,9 +378,8 @@ class CameraNativeView(
                 val size = streamingSize["size"] as Size
                 val bitrateRes = streamingSize["bitrate"] as Int
                 rtmpCamera.forceBt709Color(forceBt709Color)
-                if ((enableAudio && rtmpCamera.prepareAudio()) && rtmpCamera.prepareVideo(
-                        size.width,
-                        size.height,
+                if (prepareAudioEncoder() && prepareVideoEncoder(
+                        size,
                         bitrateRes
                     )
                 ) {
@@ -291,13 +412,12 @@ class CameraNativeView(
                 lastStreamBitrate = bitrate
                 val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
                 val size = streamingSize["size"] as Size
-                val bitrateRes = streamingSize["bitrate"] as Int
+                val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
                 rtmpCamera.forceBt709Color(forceBt709Color)
                 (rtmpCamera.streamClient as? RtmpStreamClient)?.shouldSendPings(rtmpShouldSendPings)
-                if (rtmpCamera.isRecording || rtmpCamera.prepareAudio() && rtmpCamera.prepareVideo(
-                        size.width,
-                        size.height,
-                        bitrate ?: bitrateRes
+                if (rtmpCamera.isRecording || prepareAudioEncoder() && prepareVideoEncoder(
+                        size,
+                        bitrateRes
                     )
                 ) {
                     // ready to start streaming
@@ -974,14 +1094,10 @@ class CameraNativeView(
             }
             val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
             val size = streamingSize["size"] as Size
-            val bitrateRes = lastStreamBitrate ?: (streamingSize["bitrate"] as Int)
+            val bitrateRes = lastStreamBitrate ?: customVideoBitrate ?: (streamingSize["bitrate"] as Int)
             rtmpCamera.forceBt709Color(forceBt709Color)
             (rtmpCamera.streamClient as? RtmpStreamClient)?.shouldSendPings(rtmpShouldSendPings)
-            val prepared = rtmpCamera.prepareAudio() && rtmpCamera.prepareVideo(
-                size.width,
-                size.height,
-                bitrateRes
-            )
+            val prepared = prepareAudioEncoder() && prepareVideoEncoder(size, bitrateRes)
             if (rtmpCamera.isRecording || prepared) {
                 Log.d("CameraNativeView", "resumeStreamAfterSurfaceChange: $url")
                 rtmpCamera.startStream(url)
@@ -1015,6 +1131,7 @@ class CameraNativeView(
         ret["droppedVideoFrames"] = rtmpCamera.streamClient.getDroppedVideoFrames()
         ret["bytesSend"] = rtmpCamera.streamClient.getBytesSend()
         ret["isAudioMuted"] = rtmpCamera.isAudioMuted
+        ret["isVideoMuted"] = rtmpCamera.glInterface?.isVideoMuted ?: false
         ret["bitrate"] = rtmpCamera.bitrate
         ret["width"] = rtmpCamera.streamWidth
         ret["height"] = rtmpCamera.streamHeight

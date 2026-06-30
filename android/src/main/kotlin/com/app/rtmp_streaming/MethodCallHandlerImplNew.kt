@@ -157,6 +157,43 @@ class MethodCallHandlerImplNew(
                 getCameraView()?.setRtmpShouldSendPings(call.argument("enabled"), result)
                     ?: result.error("no_camera", "Camera not initialized", null)
             }
+            "prepareForVideoStreaming" -> {
+                getCameraView()?.prepareForVideoStreaming(result)
+                    ?: result.success(null)
+            }
+            "getHasAudio" -> {
+                getCameraView()?.getHasAudio(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setHasAudio" -> {
+                getCameraView()?.setHasAudio(call.argument("isEnable"), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "getHasVideo" -> {
+                getCameraView()?.getHasVideo(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setHasVideo" -> {
+                getCameraView()?.setHasVideo(call.argument("isEnable"), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setAudioSettings" -> {
+                getCameraView()?.setAudioSettings(call.argument("bitrate"), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setVideoSettings" -> {
+                getCameraView()?.setVideoSettings(
+                    call.argument("bitrate"),
+                    call.argument("width"),
+                    call.argument("height"),
+                    call.argument("frameInterval"),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setFrameRate" -> {
+                getCameraView()?.setFrameRate(call.argument("frameRate"), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
             "switchCamera" -> {
                 Log.i("Stuff", "switchCamera")
                 getCameraView()?.switchCamera(call.argument("cameraName"),result)
