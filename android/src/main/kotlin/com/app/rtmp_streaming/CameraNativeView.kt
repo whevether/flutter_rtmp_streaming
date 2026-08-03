@@ -60,6 +60,10 @@ import com.pedro.encoder.input.gl.render.filters.`object`.GifObjectFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.ImageObjectFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.SurfaceFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.TextObjectFilterRender
+import com.pedro.encoder.input.audio.NoAudioEffect
+import com.pedro.encoder.input.audio.PitchShiftEffect
+import com.pedro.encoder.input.sources.audio.MicrophoneSource
+import com.pedro.encoder.input.sources.video.Camera2Source
 import com.pedro.encoder.input.video.CameraHelper
 import com.pedro.encoder.input.video.CameraHelper.Facing.BACK
 import com.pedro.encoder.utils.gl.AspectRatioMode
@@ -100,6 +104,8 @@ class CameraNativeView(
     /** 当前已设置的滤镜实例，removeFilter 必须用同一实例才能生效 */
     private var currentFilter: BaseFilterRender? = null
     private var currentFilterType: Int? = null
+    /** RootEncoder PitchShiftEffect；pitch≈1 时使用 NoAudioEffect */
+    private var pitchShiftEffect: PitchShiftEffect? = null
     /** RootEncoder 2.7.0+：下一帧编码使用 BT.709 色彩（在 prepare 前设置） */
     private var forceBt709Color: Boolean = false
     /** RootEncoder 2.7.0+：RTMP 周期 ping，用于 RTT（须在与 startStream 前对 RtmpStreamClient 设置） */
@@ -1340,6 +1346,97 @@ class CameraNativeView(
             }
         }
         result.success(ret)
+    }
+
+    fun setPitchShift(pitch: Double?, result: MethodChannel.Result) {
+        if (pitch == null) {
+            result.error("setPitchShift", "pitch is required", null)
+            return
+        }
+        try {
+            val effect = if (kotlin.math.abs(pitch - 1.0) < 0.001) {
+                pitchShiftEffect = null
+                NoAudioEffect()
+            } else {
+                val pitchEffect = pitchShiftEffect ?: PitchShiftEffect().also { pitchShiftEffect = it }
+                pitchEffect.pitch = pitch.toFloat()
+                pitchEffect
+            }
+            val whip = whipStream
+            if (whip != null && whip.isStreaming) {
+                val mic = whip.audioSource as? MicrophoneSource
+                if (mic == null) {
+                    result.error(
+                        "setPitchShift",
+                        "PitchShift is not available for the current WHIP audio source.",
+                        null
+                    )
+                    return
+                }
+                mic.setAudioEffect(effect)
+            } else {
+                genericCamera.setCustomAudioEffect(effect)
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setPitchShift", e.message, null)
+        }
+    }
+
+    fun lockExposure(result: MethodChannel.Result) {
+        try {
+            val ok = enableExposureLockOnActiveCamera()
+            result.success(ok)
+        } catch (e: Exception) {
+            result.error("lockExposure", e.message, null)
+        }
+    }
+
+    fun unlockExposure(result: MethodChannel.Result) {
+        try {
+            disableExposureLockOnActiveCamera()
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("unlockExposure", e.message, null)
+        }
+    }
+
+    fun isExposureLocked(result: MethodChannel.Result) {
+        try {
+            result.success(isExposureLockEnabledOnActiveCamera())
+        } catch (e: Exception) {
+            result.error("isExposureLocked", e.message, null)
+        }
+    }
+
+    private fun enableExposureLockOnActiveCamera(): Boolean {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+            return camera2?.enableExposureLock()
+                ?: throw IllegalStateException("Exposure lock is not available for the current WHIP video source.")
+        }
+        return genericCamera.enableExposureLock()
+    }
+
+    private fun disableExposureLockOnActiveCamera() {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+                ?: throw IllegalStateException("Exposure unlock is not available for the current WHIP video source.")
+            camera2.disableExposureLock()
+            return
+        }
+        genericCamera.disableExposureLock()
+    }
+
+    private fun isExposureLockEnabledOnActiveCamera(): Boolean {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+            return camera2?.isExposureLockEnabled() ?: false
+        }
+        return genericCamera.isExposureLockEnabled
     }
 
     fun setForceBt709Color(enabled: Boolean?, result: MethodChannel.Result) {

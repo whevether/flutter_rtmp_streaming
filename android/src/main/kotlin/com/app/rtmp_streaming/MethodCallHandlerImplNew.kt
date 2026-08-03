@@ -213,10 +213,28 @@ class MethodCallHandlerImplNew(
             "setFilter" -> {
               Log.i("Stuff", "setFilter")
               getCameraView()?.setFilter(call.argument("type"),call.argument("filePath"),result)
+                ?: result.error("no_camera", "Camera not initialized", null)
             }
             "removeFilter" -> {
               Log.i("Stuff", "removeFilter")
               getCameraView()?.removeFilter(call.argument("type"),result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setPitchShift" -> {
+                getCameraView()?.setPitchShift(call.argument<Number>("pitch")?.toDouble(), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "lockExposure" -> {
+                getCameraView()?.lockExposure(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "unlockExposure" -> {
+                getCameraView()?.unlockExposure(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "isExposureLocked" -> {
+                getCameraView()?.isExposureLocked(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
             }
             "dispose" -> {
                 Log.i("Stuff", "dispose")

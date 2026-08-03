@@ -646,6 +646,101 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
+  /// Apply RootEncoder PitchShiftEffect to microphone PCM (Android only).
+  ///
+  /// [pitch] is clamped to `0.5…3.0` on the native side. Pass `1.0` to disable
+  /// (identity / NoAudioEffect). Prefer calling while preview or streaming is active.
+  Future<void> setPitchShift(double pitch) async {
+    if (!value.isInitialized! || _isDisposed) {
+      throw CameraException(
+        'Uninitialized CameraController.',
+        'setPitchShift was called on uninitialized CameraController',
+      );
+    }
+    if (!Platform.isAndroid) {
+      throw CameraException(
+        'Unsupported platforms.',
+        'setPitchShift is only supported on Android.',
+      );
+    }
+    try {
+      await _channel.invokeMethod<void>(
+        'setPitchShift',
+        <String, dynamic>{'pitch': pitch},
+      );
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
+  /// Lock Camera2 auto-exposure at the current value (Android only).
+  ///
+  /// Must be called after preview or streaming has started. Returns whether
+  /// the lock succeeded (device may not support AE lock).
+  Future<bool> lockExposure() async {
+    if (!value.isInitialized! || _isDisposed) {
+      throw CameraException(
+        'Uninitialized CameraController.',
+        'lockExposure was called on uninitialized CameraController',
+      );
+    }
+    if (!Platform.isAndroid) {
+      throw CameraException(
+        'Unsupported platforms.',
+        'lockExposure is only supported on Android.',
+      );
+    }
+    try {
+      final locked = await _channel.invokeMethod<bool>('lockExposure');
+      return locked ?? false;
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
+  /// Unlock Camera2 auto-exposure (Android only).
+  Future<void> unlockExposure() async {
+    if (!value.isInitialized! || _isDisposed) {
+      throw CameraException(
+        'Uninitialized CameraController.',
+        'unlockExposure was called on uninitialized CameraController',
+      );
+    }
+    if (!Platform.isAndroid) {
+      throw CameraException(
+        'Unsupported platforms.',
+        'unlockExposure is only supported on Android.',
+      );
+    }
+    try {
+      await _channel.invokeMethod<void>('unlockExposure');
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
+  /// Whether Camera2 exposure lock is currently enabled (Android only).
+  Future<bool> isExposureLocked() async {
+    if (!value.isInitialized! || _isDisposed) {
+      throw CameraException(
+        'Uninitialized CameraController.',
+        'isExposureLocked was called on uninitialized CameraController',
+      );
+    }
+    if (!Platform.isAndroid) {
+      throw CameraException(
+        'Unsupported platforms.',
+        'isExposureLocked is only supported on Android.',
+      );
+    }
+    try {
+      final locked = await _channel.invokeMethod<bool>('isExposureLocked');
+      return locked ?? false;
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
   /// Get statistics about the rtmp stream.
   ///
   /// Throws a [CameraException] if image streaming was not started.

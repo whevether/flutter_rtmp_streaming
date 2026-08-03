@@ -65,6 +65,8 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   bool _rtmpShouldSendPings = false;
   Timer? _streamStatsTimer;
   String _androidStreamStatsLine = '';
+  double _pitchShift = 1.0;
+  bool _exposureLocked = false;
 
   /// HaishinKit 2.2.5+：分屏/多任务时保持相机（iOS 17+）
   bool _iosMultitaskingCamera = false;
@@ -389,6 +391,46 @@ class CameraExampleHomeState extends State<CameraExampleHome>
             onChanged: (v) {
               setState(() => _rtmpShouldSendPings = v);
             },
+          ),
+          Text('变调 PitchShift (${_pitchShift.toStringAsFixed(1)})'),
+          Slider(
+            value: _pitchShift,
+            min: 0.5,
+            max: 3.0,
+            divisions: 25,
+            label: _pitchShift.toStringAsFixed(1),
+            onChanged: isControllerInitialized
+                ? (v) async {
+                    setState(() => _pitchShift = v);
+                    try {
+                      await controller.setPitchShift(v);
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+          ),
+          Text('曝光锁定 (预览/推流后)'),
+          Switch(
+            value: _exposureLocked,
+            onChanged: isControllerInitialized
+                ? (v) async {
+                    try {
+                      if (v) {
+                        final ok = await controller.lockExposure();
+                        setState(() => _exposureLocked = ok);
+                        if (!ok) {
+                          showInSnackBar('Exposure lock failed (unsupported or camera not started)');
+                        }
+                      } else {
+                        await controller.unlockExposure();
+                        setState(() => _exposureLocked = false);
+                      }
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
           ),
           if (_androidStreamStatsLine.isNotEmpty)
             Padding(

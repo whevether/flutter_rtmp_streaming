@@ -82,6 +82,8 @@
 - 🎨 设置滤镜：`setFilter`  
   > 滤镜 `type` 值请查看源码 [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt)  
 - ❌ 移除滤镜：`removeFilter`  
+- 🎙️ 变调：`setPitchShift`（RootEncoder `PitchShiftEffect`；传 `1.0` 关闭）  
+- 🔒 曝光锁定：`lockExposure` / `unlockExposure` / `isExposureLocked`（须在预览或推流启动后）  
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
 - 📶 RTMP Ping / RTT：`setRtmpShouldSendPings`（RootEncoder 2.7.0+，仅 RTMP）  
 
@@ -268,6 +270,27 @@ print('${stats.fps} fps, muted=${stats.isAudioMuted}');
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
+```
+
+---
+
+### Android：`setPitchShift(double pitch)`
+- **作用**：麦克风 PCM 变调（RootEncoder `PitchShiftEffect`）。
+- **说明**：原生侧将 `pitch` 限制在 `0.5…3.0`；传 `1.0` 关闭变调。
+```dart
+await controller.setPitchShift(1.8);
+await controller.setPitchShift(1.0); // 关闭
+```
+
+---
+
+### Android：`lockExposure` / `unlockExposure` / `isExposureLocked`
+- **作用**：锁定 / 解锁 Camera2 自动曝光（避免人脸或光线导致曝光跳动）。
+- **调用时机**：预览或推流**已启动之后**。
+```dart
+final locked = await controller.lockExposure();
+final isLocked = await controller.isExposureLocked();
+await controller.unlockExposure();
 ```
 
 ---

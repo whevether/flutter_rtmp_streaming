@@ -80,6 +80,8 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - ▶️ Resume recording: `resumeVideoRecording`  
 - 🎨 Apply filter: `setFilter` — see [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt) for `type` values  
 - ❌ Remove filter: `removeFilter`  
+- 🎙️ Pitch shift: `setPitchShift` (RootEncoder `PitchShiftEffect`; `1.0` disables)  
+- 🔒 Exposure lock: `lockExposure` / `unlockExposure` / `isExposureLocked` (after preview or streaming starts)  
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+, RTMP only)  
 
@@ -246,6 +248,24 @@ final stats = await controller.getStreamStatistics();
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
+```
+
+---
+
+### Android: `setPitchShift(double pitch)`
+```dart
+// Raise pitch (chipmunk). Pass 1.0 to disable.
+await controller.setPitchShift(1.8);
+```
+
+---
+
+### Android: `lockExposure` / `unlockExposure` / `isExposureLocked`
+Call after preview or streaming has started.
+```dart
+final locked = await controller.lockExposure();
+final isLocked = await controller.isExposureLocked();
+await controller.unlockExposure();
 ```
 
 ---
