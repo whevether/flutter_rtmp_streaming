@@ -51,7 +51,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   bool isFlashLight = false; // false表示关闭闪光灯，true表示打开闪光灯
   CameraDescription? _cameraDesc;
   final TextEditingController _textFieldController =
-      TextEditingController(text: "rtmp://192.168.1.15/live/live");
+      TextEditingController(text: "rtmp://192.168.2.81/live/live");
   StreamingProtocol _selectedProtocol = StreamingProtocol.rtmp;
 
   List<StreamingProtocol> get _availableProtocols {
@@ -441,7 +441,73 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               ),
             ),
         ],
-        if (Platform.isIOS) ...[
+          ElevatedButton(
+            onPressed: !isControllerInitialized
+                ? null
+                : () async {
+                    try {
+                      await controller.setOverlayText(
+                        text: 'LIVE',
+                        fontSize: 12,
+                        colorArgb: 0xFFFF0000,
+                        position: OverlayPosition.topLeft,
+                      );
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  },
+            child: const Text('叠字 LIVE'),
+          ),
+          ElevatedButton(
+            onPressed: !isControllerInitialized
+                ? null
+                : () async {
+                    try {
+                      await controller.clearOverlay();
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  },
+            child: const Text('清除叠字'),
+          ),
+          if (Platform.isIOS)
+            ElevatedButton(
+              onPressed: !isControllerInitialized
+                  ? null
+                  : () async {
+                      try {
+                        await controller.prepareScreenBroadcastConfig(
+                          url: _textFieldController.text,
+                          protocol: _selectedProtocol == StreamingProtocol.srt
+                              ? StreamingProtocol.srt
+                              : StreamingProtocol.rtmp,
+                        );
+                        showInSnackBar(
+                          '已写入 App Group。请从控制中心开始直播扩展。',
+                        );
+                      } on CameraException catch (e) {
+                        _showCameraException(e);
+                      }
+                    },
+              child: const Text('准备 iOS 录屏配置'),
+            ),
+          if (Platform.isAndroid)
+            ElevatedButton(
+              onPressed: !isControllerInitialized
+                  ? null
+                  : () async {
+                      try {
+                        await controller.startScreenStreaming(
+                          _textFieldController.text,
+                          protocol: _selectedProtocol,
+                        );
+                      } on CameraException catch (e) {
+                        _showCameraException(e);
+                      }
+                    },
+              child: const Text('Android 录屏推流'),
+            ),
+          if (Platform.isIOS) ...[
           const SizedBox(height: 8),
           const Text('多任务相机 (HaishinKit 2.2.5+, iOS 17+)'),
           Switch(

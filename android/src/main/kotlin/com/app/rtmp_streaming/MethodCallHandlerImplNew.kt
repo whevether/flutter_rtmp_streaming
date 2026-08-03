@@ -220,6 +220,53 @@ class MethodCallHandlerImplNew(
               getCameraView()?.removeFilter(call.argument("type"),result)
                 ?: result.error("no_camera", "Camera not initialized", null)
             }
+            "setOverlayText" -> {
+                getCameraView()?.setOverlayText(
+                    call.argument("text"),
+                    call.argument<Number>("fontSize")?.toDouble(),
+                    call.argument<Number>("colorArgb")?.toInt(),
+                    call.argument("position"),
+                    call.argument<Number>("scale")?.toDouble(),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setOverlayImage" -> {
+                getCameraView()?.setOverlayImage(
+                    call.argument("filePath"),
+                    call.argument("position"),
+                    call.argument<Number>("scale")?.toDouble(),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "clearOverlay" -> {
+                getCameraView()?.clearOverlay(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "startMultiStreaming" -> {
+                @Suppress("UNCHECKED_CAST")
+                val destinations = call.argument<List<Map<String, Any?>>>("destinations")
+                getCameraView()?.startMultiStreaming(
+                    destinations,
+                    call.argument<Number>("bitrate")?.toInt(),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "stopStreamingDestination" -> {
+                getCameraView()?.stopStreamingDestination(call.argument("id"), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "startScreenStreaming" -> {
+                getCameraView()?.startScreenStreaming(
+                    call.argument("url"),
+                    call.argument("protocol"),
+                    call.argument<Number>("bitrate")?.toInt(),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "stopScreenStreaming" -> {
+                getCameraView()?.stopScreenStreaming(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
             "setPitchShift" -> {
                 getCameraView()?.setPitchShift(call.argument<Number>("pitch")?.toDouble(), result)
                     ?: result.error("no_camera", "Camera not initialized", null)
@@ -337,4 +384,9 @@ class MethodCallHandlerImplNew(
     }
 
     private fun getCameraView(): CameraNativeView? = nativeViewFactory?.cameraNativeView
+
+    fun handleActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?): Boolean {
+        return getCameraView()?.screenActivityResultListener()
+            ?.onActivityResult(requestCode, resultCode, data) ?: false
+    }
 }

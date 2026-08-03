@@ -74,6 +74,7 @@ import com.pedro.library.util.streamclient.RtmpStreamClient
 import com.pedro.library.util.streamclient.WhipStreamClient
 import com.pedro.library.whip.WhipStream
 import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.PluginRegistry
 import io.flutter.plugin.platform.PlatformView
 import com.pedro.library.view.OpenGlView
 import com.pedro.library.util.BitrateAdapter
@@ -106,6 +107,8 @@ class CameraNativeView(
     private var currentFilterType: Int? = null
     /** RootEncoder PitchShiftEffect；pitch≈1 时使用 NoAudioEffect */
     private var pitchShiftEffect: PitchShiftEffect? = null
+    /** Overlay object filter (text/image); cleared via clearOverlay */
+    private var overlayFilter: BaseFilterRender? = null
     /** RootEncoder 2.7.0+：下一帧编码使用 BT.709 色彩（在 prepare 前设置） */
     private var forceBt709Color: Boolean = false
     /** RootEncoder 2.7.0+：RTMP 周期 ping，用于 RTT（须在与 startStream 前对 RtmpStreamClient 设置） */
@@ -125,6 +128,8 @@ class CameraNativeView(
     /** 因 Surface 销毁暂停推流时，忽略 stopStream 触发的 onDisconnect */
     private var isRestoringFromSurfaceDestroy = false
     private var currentProtocol: String = "rtmp"
+    private var multiSession: MultiStreamingSession? = null
+    private var screenController: ScreenStreamingController? = null
     init {
 //        glView.isKeepAspectRatio = true
         glView.setAspectRatioMode(AspectRatioMode.Adjust)
@@ -578,6 +583,29 @@ class CameraNativeView(
     }
 
     private fun stopActiveStream(restorePreview: Boolean = true) {
+        multiSession?.let {
+            try {
+                it.stopAll()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stop multi stream failed", e)
+            }
+            multiSession = null
+            if (restorePreview && isSurfaceCreated) {
+                startPreview(cameraName)
+            }
+            return
+        }
+        screenController?.let {
+            try {
+                it.stop()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stop screen stream failed", e)
+            }
+            if (restorePreview && isSurfaceCreated) {
+                startPreview(cameraName)
+            }
+            return
+        }
         whipStream?.let { stream ->
             try {
                 if (stream.isStreaming) stream.stopStream()
@@ -1347,6 +1375,223 @@ class CameraNativeView(
         }
         result.success(ret)
     }
+
+    private fun translateTo(position: String?): TranslateTo {
+        return when (position) {
+            "topLeft" -> TranslateTo.TOP_LEFT
+            "topRight" -> TranslateTo.TOP_RIGHT
+            "bottomLeft" -> TranslateTo.BOTTOM_LEFT
+            "bottomRight" -> TranslateTo.BOTTOM_RIGHT
+            else -> TranslateTo.CENTER
+        }
+    }
+
+    private fun clearOverlayInternal() {
+        overlayFilter?.let { genericCamera.glInterface?.removeFilter(it) }
+        overlayFilter = null
+        spriteGestureController.stopListener()
+    }
+
+    fun setOverlayText(
+        text: String?,
+        fontSize: Double?,
+        colorArgb: Int?,
+        position: String?,
+        scale: Double?,
+        result: MethodChannel.Result
+    ) {
+        if (text.isNullOrEmpty()) {
+            result.error("setOverlayText", "text is required", null)
+            return
+        }
+        try {
+            clearOverlayInternal()
+            val render = TextObjectFilterRender()
+            val color = colorArgb ?: Color.RED
+            val size = (fontSize ?: 22.0).toFloat()
+            render.setText(text, size, color)
+            val s = (scale ?: 50.0).toFloat()
+            render.setScale(s, s)
+            render.setPosition(translateTo(position))
+            genericCamera.glInterface?.setFilter(render)
+            spriteGestureController.setBaseObjectFilterRender(render)
+            overlayFilter = render
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setOverlayText", e.message, null)
+        }
+    }
+
+    fun setOverlayImage(
+        filePath: String?,
+        position: String?,
+        scale: Double?,
+        result: MethodChannel.Result
+    ) {
+        if (filePath.isNullOrEmpty()) {
+            result.error("setOverlayImage", "filePath is required", null)
+            return
+        }
+        try {
+            clearOverlayInternal()
+            val bitmap = BitmapFactory.decodeFile(filePath)
+            if (bitmap == null) {
+                result.error("setOverlayImage", "Failed to decode image", null)
+                return
+            }
+            val render = ImageObjectFilterRender()
+            genericCamera.glInterface?.setFilter(render)
+            render.setImage(bitmap)
+            val s = (scale ?: 50.0).toFloat()
+            render.setScale(s, s)
+            render.setPosition(translateTo(position))
+            spriteGestureController.setBaseObjectFilterRender(render)
+            overlayFilter = render
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setOverlayImage", e.message, null)
+        }
+    }
+
+    fun clearOverlay(result: MethodChannel.Result) {
+        try {
+            clearOverlayInternal()
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("clearOverlay", e.message, null)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    fun startMultiStreaming(
+        destinations: List<Map<String, Any?>>?,
+        bitrate: Int?,
+        result: MethodChannel.Result
+    ) {
+        if (destinations.isNullOrEmpty()) {
+            result.error("startMultiStreaming", "destinations empty", null)
+            return
+        }
+        val ctx = activity
+        if (ctx == null) {
+            result.error("startMultiStreaming", "activity null", null)
+            return
+        }
+        try {
+            if (genericCamera.isStreaming) genericCamera.stopStream()
+            whipStream?.let {
+                if (it.isStreaming) it.stopStream()
+                if (it.isOnPreview) it.stopPreview()
+                it.release()
+            }
+            whipStream = null
+            multiSession?.stopAll()
+            multiSession = null
+
+            val mapped = destinations.mapIndexed { index, d ->
+                val url = d["url"] as? String
+                    ?: throw IllegalArgumentException("url required")
+                val protocol = ((d["protocol"] as? String) ?: "rtmp").lowercase(Locale.getDefault())
+                if (protocol == "whip" || protocol == "whep") {
+                    throw IllegalArgumentException("WHIP/WHEP not allowed in multi-streaming")
+                }
+                val id = (d["id"] as? String) ?: "$protocol-$index"
+                MultiStreamingSession.Destination(id, protocol, url)
+            }
+            if (genericCamera.isOnPreview) {
+                try { genericCamera.stopCamera() } catch (_: Exception) {}
+            }
+            val streamingSize = CameraUtils.computeBestPreviewSize(ctx, cameraName, preset)
+            val size = streamingSize["size"] as Size
+            val session = MultiStreamingSession(ctx, dartMessenger, glView, mapped)
+            val vBit = bitrate ?: customVideoBitrate ?: (streamingSize["bitrate"] as Int)
+            val fpsVal = customVideoFps ?: 30
+            if (!session.prepareAndStart(size.width, size.height, fpsVal, vBit, aBitrate)) {
+                session.stopAll()
+                result.error("startMultiStreaming", "prepare failed", null)
+                return
+            }
+            multiSession = session
+            currentProtocol = "multi"
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("startMultiStreaming", e.message, null)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    fun stopStreamingDestination(id: String?, result: MethodChannel.Result) {
+        if (id.isNullOrEmpty()) {
+            result.error("stopStreamingDestination", "id required", null)
+            return
+        }
+        val session = multiSession
+        if (session == null) {
+            result.error("stopStreamingDestination", "no multi session", null)
+            return
+        }
+        if (!session.stopDestination(id)) {
+            result.error("stopStreamingDestination", "id not found", null)
+            return
+        }
+        if (!session.hasSlots()) {
+            session.stopAll()
+            multiSession = null
+            currentProtocol = "rtmp"
+            try {
+                startPreview(cameraName)
+            } catch (_: Exception) {}
+        }
+        result.success(null)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    fun startScreenStreaming(
+        url: String?,
+        protocol: String?,
+        bitrate: Int?,
+        result: MethodChannel.Result
+    ) {
+        if (url.isNullOrEmpty()) {
+            result.error("startScreenStreaming", "url required", null)
+            return
+        }
+        val act = activity
+        if (act == null) {
+            result.error("startScreenStreaming", "activity null", null)
+            return
+        }
+        try {
+            if (genericCamera.isStreaming) genericCamera.stopStream()
+            multiSession?.stopAll()
+            multiSession = null
+            if (genericCamera.isOnPreview) {
+                try { genericCamera.stopCamera() } catch (_: Exception) {}
+            }
+            val controller = screenController
+                ?: ScreenStreamingController(act, dartMessenger).also { screenController = it }
+            controller.start(url, protocol ?: "rtmp", bitrate ?: vBitrate, result)
+            currentProtocol = "screen"
+        } catch (e: Exception) {
+            result.error("startScreenStreaming", e.message, null)
+        }
+    }
+
+    fun stopScreenStreaming(result: MethodChannel.Result) {
+        try {
+            screenController?.stop()
+            currentProtocol = "rtmp"
+            try {
+                startPreview(cameraName)
+            } catch (_: Exception) {}
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("stopScreenStreaming", e.message, null)
+        }
+    }
+
+    fun screenActivityResultListener(): PluginRegistry.ActivityResultListener? =
+        screenController
 
     fun setPitchShift(pitch: Double?, result: MethodChannel.Result) {
         if (pitch == null) {

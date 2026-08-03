@@ -82,6 +82,9 @@
 - 🎨 设置滤镜：`setFilter`  
   > 滤镜 `type` 值请查看源码 [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt)  
 - ❌ 移除滤镜：`removeFilter`  
+- 🖼️ 叠字/水印：`setOverlayText` / `setOverlayImage` / `clearOverlay`（双端）  
+- 📡 多路推流：`startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP；Android MultiStream 为实验 API）  
+- 🖥️ 录屏推流：`startScreenStreaming` / `stopScreenStreaming`（Android）；iOS 用 Broadcast Extension + `prepareScreenBroadcastConfig`  
 - 🎙️ 变调：`setPitchShift`（RootEncoder `PitchShiftEffect`；传 `1.0` 关闭）  
 - 🔒 曝光锁定：`lockExposure` / `unlockExposure` / `isExposureLocked`（须在预览或推流启动后）  
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
@@ -281,6 +284,37 @@ await controller.startVideoStreaming(url);
 await controller.setPitchShift(1.8);
 await controller.setPitchShift(1.0); // 关闭
 ```
+
+---
+
+### 叠字/水印：`setOverlayText` / `setOverlayImage` / `clearOverlay`
+双端可用。
+```dart
+await controller.setOverlayText(
+  text: 'LIVE',
+  fontSize: 28,
+  colorArgb: 0xFFFF0000,
+  position: OverlayPosition.topLeft,
+);
+await controller.clearOverlay();
+```
+
+---
+
+### 多路推流：`startMultiStreaming`
+不含 WHIP/WHEP。Android 使用实验性 `MultiStream`。
+```dart
+await controller.startMultiStreaming([
+  StreamDestination(url: 'rtmp://a/live/1', protocol: StreamingProtocol.rtmp, id: 'a'),
+  StreamDestination(url: 'srt://b:9000', protocol: StreamingProtocol.srt, id: 'b'),
+]);
+```
+
+---
+
+### 录屏推流
+- **Android**：`startScreenStreaming` / `stopScreenStreaming`（MediaProjection）。
+- **iOS**：`prepareScreenBroadcastConfig` + Broadcast Upload Extension（见 [example/ios/BroadcastUploadExtension/README.md](example/ios/BroadcastUploadExtension/README.md)）。
 
 ---
 

@@ -76,6 +76,9 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
                 platformViewRegistry
             )
         }
+        binding.addActivityResultListener { requestCode, resultCode, data ->
+            methodCallHandler?.handleActivityResult(requestCode, resultCode, data) ?: false
+        }
     }
 
     override fun onDetachedFromActivityForConfigChanges() {

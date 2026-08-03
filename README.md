@@ -80,6 +80,9 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - ▶️ Resume recording: `resumeVideoRecording`  
 - 🎨 Apply filter: `setFilter` — see [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt) for `type` values  
 - ❌ Remove filter: `removeFilter`  
+- 🖼️ Overlay text/image: `setOverlayText` / `setOverlayImage` / `clearOverlay` (iOS + Android)  
+- 📡 Multi-streaming: `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (no WHIP/WHEP; Android MultiStream experimental)  
+- 🖥️ Screen streaming: `startScreenStreaming` / `stopScreenStreaming` (Android); iOS via Broadcast Extension + `prepareScreenBroadcastConfig`  
 - 🎙️ Pitch shift: `setPitchShift` (RootEncoder `PitchShiftEffect`; `1.0` disables)  
 - 🔒 Exposure lock: `lockExposure` / `unlockExposure` / `isExposureLocked` (after preview or streaming starts)  
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
@@ -256,6 +259,51 @@ await controller.startVideoStreaming(url);
 ```dart
 // Raise pitch (chipmunk). Pass 1.0 to disable.
 await controller.setPitchShift(1.8);
+```
+
+---
+
+### Overlay: `setOverlayText` / `setOverlayImage` / `clearOverlay`
+Works on Android and iOS.
+```dart
+await controller.setOverlayText(
+  text: 'LIVE',
+  fontSize: 28,
+  colorArgb: 0xFFFF0000,
+  position: OverlayPosition.topLeft,
+);
+await controller.setOverlayImage(
+  filePath: '/path/to/logo.png',
+  position: OverlayPosition.bottomRight,
+);
+await controller.clearOverlay();
+```
+
+---
+
+### Multi-streaming: `startMultiStreaming`
+WHIP/WHEP are not allowed. Android uses experimental RootEncoder `MultiStream`.
+```dart
+await controller.startMultiStreaming([
+  StreamDestination(url: 'rtmp://a/live/1', protocol: StreamingProtocol.rtmp, id: 'a'),
+  StreamDestination(url: 'srt://b:9000', protocol: StreamingProtocol.srt, id: 'b'),
+]);
+await controller.stopStreamingDestination('a');
+await controller.stopMultiStreaming();
+```
+
+---
+
+### Screen streaming
+**Android**
+```dart
+await controller.startScreenStreaming(url, protocol: StreamingProtocol.rtmp);
+await controller.stopScreenStreaming();
+```
+**iOS**: use Broadcast Upload Extension — see [example/ios/BroadcastUploadExtension/README.md](example/ios/BroadcastUploadExtension/README.md).
+```dart
+await controller.prepareScreenBroadcastConfig(url: url);
+// Then start Live Broadcast from Control Center.
 ```
 
 ---

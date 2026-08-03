@@ -65,11 +65,27 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private var currentProtocol: String = "rtmp"
   // 录制流
   private var recorderStream: StreamRecorder?
+  // Multi-streaming endpoints (excludes WHIP/WHEP)
+  private var multiEndpoints: [MultiEndpoint] = []
   //重试次数
   private var retries: Int = 0
   private var enableAudio: Bool = true
   // 插件注册
   private(set) var registrar: FlutterPluginRegistrar?
+  
+  private final class MultiEndpoint {
+    let id: String
+    let protocolName: String
+    var rtmpConnection: RTMPConnection?
+    var rtmpStream: RTMPStream?
+    var srtConnection: SRTConnection?
+    var srtStream: SRTStream?
+    var statusTask: Task<(), Error>?
+    init(id: String, protocolName: String) {
+      self.id = id
+      self.protocolName = protocolName
+    }
+  }
   
   private func ensureSessionFactoriesRegistered() async {
     guard !Self.sessionFactoriesRegistered else { return }
@@ -82,6 +98,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   //销毁所有
   private func dispose()async{
     subscription = nil
+    await tearDownMultiEndpoints()
     await tearDownRtcSession()
     await tearDownSrtSession()
     rtmpConnection = nil
@@ -108,7 +125,9 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private func stopStreaming()async->FlutterError?{
     do{
       subscription = nil
-      if currentProtocol == "srt" {
+      if !multiEndpoints.isEmpty {
+        await tearDownMultiEndpoints()
+      } else if currentProtocol == "srt" {
         await tearDownSrtSession()
       } else if currentProtocol == "whip" || currentProtocol == "whep" {
         await tearDownRtcSession()
@@ -121,6 +140,28 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       return FlutterError(code: "closeConnect Error", message: "catch error", details: nil)
     }
     
+  }
+
+  private func tearDownMultiEndpoints() async {
+    for endpoint in multiEndpoints {
+      endpoint.statusTask?.cancel()
+      if let stream = endpoint.srtStream {
+        await mixer?.removeOutput(stream)
+        _ = try? await stream.close()
+      }
+      try? await endpoint.srtConnection?.close()
+      if let stream = endpoint.rtmpStream {
+        // Keep the primary initialize()-owned rtmpStream attached for preview.
+        if stream !== rtmpStream {
+          await mixer?.removeOutput(stream)
+          _ = try? await stream.close()
+        } else {
+          _ = try? await stream.close()
+        }
+      }
+      try? await endpoint.rtmpConnection?.close()
+    }
+    multiEndpoints.removeAll()
   }
 
   private func tearDownSrtSession() async {
@@ -527,6 +568,99 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       )
     }
   }
+
+  private func startMultiStreaming(
+    destinations: [[String: Any]],
+    frameRate: NSNumber
+  ) async -> FlutterError? {
+    await tearDownMultiEndpoints()
+    await tearDownSrtSession()
+    await tearDownRtcSession()
+    try? await rtmpConnection?.close()
+
+    for (index, dest) in destinations.enumerated() {
+      guard let url = dest["url"] as? String else {
+        return FlutterError(code: "startMultiStreamingError", message: "url empty", details: nil)
+      }
+      let protocolName = ((dest["protocol"] as? String) ?? "rtmp").lowercased()
+      if protocolName == "whip" || protocolName == "whep" || protocolName == "rtsp" || protocolName == "udp" {
+        return FlutterError(
+          code: "unsupportedProtocol",
+          message: "StreamingProtocol.\(protocolName) is not allowed in iOS multi-streaming.",
+          details: nil
+        )
+      }
+      let id = (dest["id"] as? String) ?? "\(protocolName)-\(index)"
+      let endpoint = MultiEndpoint(id: id, protocolName: protocolName)
+      do {
+        if protocolName == "srt" {
+          guard let srtUrl = URL(string: url), url.lowercased().hasPrefix("srt") else {
+            return FlutterError(code: "startMultiStreamingError", message: "Invalid SRT URL", details: nil)
+          }
+          let connection = SRTConnection()
+          let stream = SRTStream(connection: connection)
+          endpoint.srtConnection = connection
+          endpoint.srtStream = stream
+          await mixer?.addOutput(stream, startRunning: false)
+          try await connection.connect(srtUrl)
+          await stream.publish()
+        } else {
+          guard let uri = URL(string: url), let name = uri.pathComponents.last else {
+            return FlutterError(code: "startMultiStreamingError", message: "Invalid RTMP URL", details: nil)
+          }
+          var bits = url.components(separatedBy: "/")
+          bits.removeLast()
+          let connectUrl = bits.joined(separator: "/")
+          let connection = RTMPConnection()
+          let stream = RTMPStream(connection: connection)
+          endpoint.rtmpConnection = connection
+          endpoint.rtmpStream = stream
+          await mixer?.addOutput(stream, startRunning: false)
+          try await connection.connect(connectUrl)
+          _ = try? await stream.publish(name)
+        }
+        eventSink?([
+          "eventType": "success",
+          "errorDescription": "connection success",
+          "streamId": id
+        ])
+        multiEndpoints.append(endpoint)
+      } catch {
+        await tearDownMultiEndpoints()
+        return FlutterError(
+          code: "startMultiStreamingError",
+          message: error.localizedDescription,
+          details: id
+        )
+      }
+    }
+    currentProtocol = "multi"
+    _ = frameRate
+    return nil
+  }
+
+  private func stopStreamingDestination(id: String) async -> FlutterError? {
+    guard let index = multiEndpoints.firstIndex(where: { $0.id == id }) else {
+      return FlutterError(code: "stopStreamingDestinationError", message: "id not found", details: id)
+    }
+    let endpoint = multiEndpoints.remove(at: index)
+    endpoint.statusTask?.cancel()
+    if let stream = endpoint.srtStream {
+      await mixer?.removeOutput(stream)
+      _ = try? await stream.close()
+    }
+    try? await endpoint.srtConnection?.close()
+    if let stream = endpoint.rtmpStream {
+      await mixer?.removeOutput(stream)
+      _ = try? await stream.close()
+    }
+    try? await endpoint.rtmpConnection?.close()
+    if multiEndpoints.isEmpty {
+      currentProtocol = "rtmp"
+    }
+    return nil
+  }
+
   //录制本地视频
   private func startVideoRecording(filePath: String) async -> FlutterError?{
     do{
@@ -1438,6 +1572,108 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       }
     case "getPlatformVersion":
       result(kHaishinKitIdentifier)
+    case "setOverlayText":
+      guard
+        let arguments = call.arguments as? [String: Any?],
+        let text = arguments["text"] as? String,
+        let mixer else {
+        result(FlutterError(code: "setOverlayTextError", message: "params empty", details: nil))
+        return
+      }
+      let fontSize = (arguments["fontSize"] as? NSNumber)?.doubleValue ?? 22
+      let colorArgb: UInt32 = {
+        if let n = arguments["colorArgb"] as? NSNumber {
+          return UInt32(truncatingIfNeeded: n.int64Value)
+        }
+        return 0xFFFF0000
+      }()
+      let position = arguments["position"] as? String
+      let scale = (arguments["scale"] as? NSNumber)?.doubleValue ?? 50
+      Task {
+        do {
+          try await mixer.setOverlayText(
+            text: text,
+            fontSize: CGFloat(fontSize),
+            colorArgb: colorArgb,
+            position: position,
+            scale: CGFloat(scale)
+          )
+          result(nil)
+        } catch {
+          result(FlutterError(code: "setOverlayTextError", message: error.localizedDescription, details: nil))
+        }
+      }
+    case "setOverlayImage":
+      guard
+        let arguments = call.arguments as? [String: Any?],
+        let filePath = arguments["filePath"] as? String,
+        let mixer else {
+        result(FlutterError(code: "setOverlayImageError", message: "params empty", details: nil))
+        return
+      }
+      let position = arguments["position"] as? String
+      let scale = (arguments["scale"] as? NSNumber)?.doubleValue ?? 50
+      Task {
+        do {
+          try await mixer.setOverlayImage(filePath: filePath, position: position, scale: CGFloat(scale))
+          result(nil)
+        } catch {
+          result(FlutterError(code: "setOverlayImageError", message: error.localizedDescription, details: nil))
+        }
+      }
+    case "clearOverlay":
+      guard let mixer else {
+        result(FlutterError(code: "clearOverlayError", message: "mixer empty", details: nil))
+        return
+      }
+      Task {
+        await mixer.clearOverlay()
+        result(nil)
+      }
+    case "prepareScreenBroadcastConfig":
+      guard
+        let arguments = call.arguments as? [String: Any?],
+        let url = arguments["url"] as? String,
+        let appGroupId = arguments["appGroupId"] as? String else {
+        result(FlutterError(code: "prepareScreenBroadcastConfigError", message: "params empty", details: nil))
+        return
+      }
+      let protocolName = (arguments["protocol"] as? String) ?? "rtmp"
+      guard let defaults = UserDefaults(suiteName: appGroupId) else {
+        result(FlutterError(
+          code: "prepareScreenBroadcastConfigError",
+          message: "App Group '\(appGroupId)' unavailable. Enable App Groups for Runner + Extension.",
+          details: nil
+        ))
+        return
+      }
+      defaults.set(url, forKey: "rtmp_streaming.broadcast.url")
+      defaults.set(protocolName, forKey: "rtmp_streaming.broadcast.protocol")
+      defaults.synchronize()
+      result(nil)
+    case "startMultiStreaming":
+      guard
+        let arguments = call.arguments as? [String: Any?],
+        let destinations = arguments["destinations"] as? [[String: Any]],
+        let bitrate = arguments["bitrate"] as? NSNumber else {
+        result(FlutterError(code: "startMultiStreamingError", message: "params empty", details: nil))
+        return
+      }
+      Task {
+        let res = await startMultiStreaming(destinations: destinations, frameRate: bitrate)
+        result(res)
+      }
+    case "stopStreamingDestination":
+      guard
+        let arguments = call.arguments as? [String: Any?],
+        let id = arguments["id"] as? String else {
+        result(FlutterError(code: "stopStreamingDestinationError", message: "id empty", details: nil))
+        return
+      }
+      Task {
+        let res = await stopStreamingDestination(id: id)
+        result(res)
+      }
     case "dispose":
       Task{
         await dispose()

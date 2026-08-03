@@ -16,6 +16,8 @@ import UIKit
 final class MediaMixerHandler: NSObject {
   var texture: HKStreamFlutterTexture?
   private lazy var mixer = MediaMixer(multiTrackAudioMixingEnabled: false)
+  private var overlayObject: ScreenObject?
+  private var screenConfiguredForOverlay = false
   
   override init() {
     super.init()
@@ -43,6 +45,7 @@ final class MediaMixerHandler: NSObject {
   }
   
   func dispose()  async{
+    await clearOverlay()
     stopRunning()
     _ = try? await mixer.attachVideo(nil, track: 0)
     _ = try? await mixer.attachAudio(nil, track: 0)
@@ -201,4 +204,95 @@ final class MediaMixerHandler: NSObject {
     }
   }
 #endif
+
+  private func ensureOverlayScreenConfigured() async {
+    guard !screenConfiguredForOverlay else { return }
+    var videoMixerSettings = await mixer.videoMixerSettings
+    videoMixerSettings.mode = .offscreen
+    await mixer.setVideoMixerSettings(videoMixerSettings)
+    let size = await mixer.screen.size
+    if size == .zero {
+      await mixer.screen.size = CGSize(width: 720, height: 1280)
+    }
+    screenConfiguredForOverlay = true
+  }
+
+  private func applyPosition(_ object: ScreenObject, position: String?) {
+    switch position {
+    case "topLeft":
+      object.horizontalAlignment = .left
+      object.verticalAlignment = .top
+    case "topRight":
+      object.horizontalAlignment = .right
+      object.verticalAlignment = .top
+    case "bottomLeft":
+      object.horizontalAlignment = .left
+      object.verticalAlignment = .bottom
+    case "bottomRight":
+      object.horizontalAlignment = .right
+      object.verticalAlignment = .bottom
+    default:
+      object.horizontalAlignment = .center
+      object.verticalAlignment = .middle
+    }
+  }
+
+  func setOverlayText(
+    text: String,
+    fontSize: CGFloat,
+    colorArgb: UInt32,
+    position: String?,
+    scale: CGFloat
+  ) async throws {
+    await ensureOverlayScreenConfigured()
+    if let existing = overlayObject {
+      try? await mixer.screen.removeChild(existing)
+      overlayObject = nil
+    }
+    let textObject = TextScreenObject()
+    textObject.string = text
+    let uiColor = Self.uiColor(argb: colorArgb)
+    textObject.attributes = [
+      .font: UIFont.boldSystemFont(ofSize: fontSize),
+      .foregroundColor: uiColor
+    ]
+    let dim = max(scale * 2, 40)
+    textObject.size = CGSize(width: dim * 4, height: dim)
+    applyPosition(textObject, position: position)
+    try await mixer.screen.addChild(textObject)
+    overlayObject = textObject
+  }
+
+  func setOverlayImage(filePath: String, position: String?, scale: CGFloat) async throws {
+    await ensureOverlayScreenConfigured()
+    if let existing = overlayObject {
+      try? await mixer.screen.removeChild(existing)
+      overlayObject = nil
+    }
+    guard let image = UIImage(contentsOfFile: filePath)?.cgImage else {
+      throw NSError(domain: "setOverlayImage", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to load image"])
+    }
+    let imageObject = ImageScreenObject()
+    imageObject.cgImage = image
+    let w = max(scale * 2, 40)
+    imageObject.size = CGSize(width: w, height: w)
+    applyPosition(imageObject, position: position)
+    try await mixer.screen.addChild(imageObject)
+    overlayObject = imageObject
+  }
+
+  func clearOverlay() async {
+    if let existing = overlayObject {
+      try? await mixer.screen.removeChild(existing)
+      overlayObject = nil
+    }
+  }
+
+  private static func uiColor(argb: UInt32) -> UIColor {
+    let a = CGFloat((argb >> 24) & 0xff) / 255.0
+    let r = CGFloat((argb >> 16) & 0xff) / 255.0
+    let g = CGFloat((argb >> 8) & 0xff) / 255.0
+    let b = CGFloat(argb & 0xff) / 255.0
+    return UIColor(red: r, green: g, blue: b, alpha: a == 0 ? 1 : a)
+  }
 }
