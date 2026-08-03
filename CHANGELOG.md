@@ -1,3 +1,36 @@
+## 2.0.0
+
+1. **Multi-protocol streaming**
+   - Added `StreamingProtocol` (`rtmp` / `rtsp` / `srt` / `udp` / `whip` / `whep`) for `startVideoStreaming`.
+   - Android (RootEncoder **2.8.0**): RTMP, RTSP, SRT, UDP, WHIP.
+   - iOS (HaishinKit **2.2.5**): RTMP, SRT; WHIP/WHEP via `RTCHaishinKit` (alpha, Flutter SPM).
+
+2. **Overlay / watermark** (Android + iOS)
+   - `setOverlayText` / `setOverlayImage` / `clearOverlay`.
+   - iOS: when overlay is enabled, canvas / encoder size follows portrait or landscape (avoids stretched/shrunk preview).
+
+3. **Multi-streaming** (iOS only)
+   - `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (WHIP/WHEP not allowed).
+   - Example defaults to one RTMP + one SRT destination.
+
+4. **SRT URL compatibility** (iOS)
+   - `SrtURLHelper` supports SRS/ZLMediaKit-style URLs such as  
+     `srt://host:10080?streamid=#!::r=live/livestream,m=publish`  
+     (`#` is applied via `SRTO_STREAMID`, not as a URL fragment).
+   - Clearer SRT connect error messages (`unsupportedUri` / reject reason).
+
+5. **iOS EventChannel**
+   - Native → Flutter events are always posted on the platform (main) thread.
+
+6. **Android extras**
+   - `setPitchShift` (RootEncoder pitch effect; `1.0` disables).
+   - `lockExposure` / `unlockExposure` / `isExposureLocked` (after preview/stream start).
+   - Target / toolchain updates (e.g. compileSdk 37, AGP 9.x).
+
+7. **Docs & example**
+   - README / README_zhCN and example app updated for protocols, overlay, and iOS multi-streaming.
+
+
 ## 1.0.8
 
 1. Fixed an error in the prepareVideo parameter that could cause compilation errors.

@@ -1,3 +1,36 @@
+## 2.0.0
+
+1. **多协议推流**
+   - 新增 `StreamingProtocol`（`rtmp` / `rtsp` / `srt` / `udp` / `whip` / `whep`），供 `startVideoStreaming` 使用。
+   - Android（RootEncoder **2.8.0**）：RTMP、RTSP、SRT、UDP、WHIP。
+   - iOS（HaishinKit **2.2.5**）：RTMP、SRT；WHIP/WHEP 经 `RTCHaishinKit`（alpha，需 Flutter SPM）。
+
+2. **叠字 / 水印**（Android + iOS）
+   - `setOverlayText` / `setOverlayImage` / `clearOverlay`。
+   - iOS：开启叠字后画布与编码尺寸随横竖屏对齐，避免预览被压扁/拉伸。
+
+3. **多路推流**（仅 iOS）
+   - `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP）。
+   - Example 默认一路 RTMP + 一路 SRT。
+
+4. **SRT URL 兼容**（iOS）
+   - `SrtURLHelper` 支持 SRS/ZLMediaKit 风格地址，例如  
+     `srt://host:10080?streamid=#!::r=live/livestream,m=publish`  
+     （`#` 经 `SRTO_STREAMID` 设置，不再被当成 URL fragment）。
+   - 更明确的 SRT 连接错误信息（`unsupportedUri` / 服务端拒绝原因）。
+
+5. **iOS EventChannel**
+   - 原生向 Flutter 发送事件统一切到平台主线程，避免非主线程通道告警。
+
+6. **Android 扩展**
+   - `setPitchShift`（RootEncoder 变调；`1.0` 关闭）。
+   - `lockExposure` / `unlockExposure` / `isExposureLocked`（预览或推流启动后调用）。
+   - 工程与工具链更新（如 compileSdk 37、AGP 9.x）。
+
+7. **文档与示例**
+   - 更新 README / README_zhCN 与 example，覆盖协议、叠字、iOS 多路推流说明。
+
+
 ## 1.0.8
 1. 修复prepareVideo参数存在错误。会导致编译错误.
 
