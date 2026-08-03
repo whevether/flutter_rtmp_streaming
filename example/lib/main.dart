@@ -55,10 +55,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   StreamingProtocol _selectedProtocol = StreamingProtocol.rtmp;
 
   List<StreamingProtocol> get _availableProtocols {
-    if (Platform.isIOS) {
-      return const [StreamingProtocol.rtmp, StreamingProtocol.srt];
-    }
-    return StreamingProtocol.values;
+    return StreamingProtocol.values
+        .where(isStreamingProtocolSupported)
+        .toList(growable: false);
   }
 
   /// RootEncoder 2.7.0+：BT.709 与 RTMP ping/RTT 示例
@@ -838,6 +837,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                             case StreamingProtocol.whip:
                               _textFieldController.text =
                                   'https://example.com/whip';
+                            case StreamingProtocol.whep:
+                              _textFieldController.text =
+                                  'https://example.com/whep';
                           }
                           result = _textFieldController.text;
                         });

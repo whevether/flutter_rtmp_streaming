@@ -11,15 +11,16 @@
 | RTSP | ✅ | ❌ | `rtsp://host:8554/live` |
 | SRT | ✅ | ✅ | `srt://host:9000` |
 | UDP | ✅ | ❌ | `udp://host:5004` |
-| WHIP | ✅ | ❌ | `https://host/whip` |
+| WHIP | ✅ | ✅ (alpha) | `https://host/whip` |
+| WHEP | ❌ | ✅ (alpha) | `https://host/whep` |
 
-Pass an explicit `StreamingProtocol` (default `rtmp`).
+Pass an explicit `StreamingProtocol` (default `rtmp`). iOS WHIP/WHEP use `RTCHaishinKit` (H264/OPUS) and require Flutter SPM.
 
 ---
 
 ## ⚙️ Technical Foundation
 - **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.8.0`](https://github.com/pedroSG94/RootEncoder)  
-- **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift) (includes `SRTHaishinKit`)  
+- **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift) (includes `SRTHaishinKit`, `RTCHaishinKit` for WHIP/WHEP alpha)  
 
 By leveraging these mature libraries, `rtmp_streaming` provides a consistent cross-platform API interface, reducing development complexity.
 
@@ -45,7 +46,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 - ⏹️ Stop local video recording: `stopRecording`  
 - 📡 Start recording and streaming: `startVideoRecordingAndStreaming`  
 - ⏹️ Stop recording or streaming: `stopRecordingOrStreaming`  
-- 📡 Start video streaming: `startVideoStreaming` (`url`, `protocol`, `bitrate`; Android WHIP optional `whipToken`)  
+- 📡 Start video streaming: `startVideoStreaming` (`url`, `protocol`, `bitrate`; WHIP optional `whipToken`)  
 - ⏹️ Stop video streaming: `stopStreaming`  
 - 🔄 Switch camera: `switchCamera`  
 - 🔊 Toggle mic capture on/off: `switchAudio`  
@@ -126,6 +127,17 @@ await controller.startVideoStreaming(
 // await controller.startVideoStreaming(
 //   'srt://your-server:9000',
 //   protocol: StreamingProtocol.srt,
+// );
+
+// WHIP (Android + iOS alpha) / WHEP (iOS alpha)
+// await controller.startVideoStreaming(
+//   'https://your-server/whip',
+//   protocol: StreamingProtocol.whip,
+//   whipToken: 'optional-bearer-token',
+// );
+// await controller.startVideoStreaming(
+//   'https://your-server/whep',
+//   protocol: StreamingProtocol.whep,
 // );
 ```
 

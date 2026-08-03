@@ -20,7 +20,8 @@ let package = Package(
             dependencies: [
                 .product(name: "HaishinKit", package: "HaishinKit.swift"),
                 .product(name: "RTMPHaishinKit", package: "HaishinKit.swift"),
-                .product(name: "SRTHaishinKit", package: "HaishinKit.swift")
+                .product(name: "SRTHaishinKit", package: "HaishinKit.swift"),
+                .product(name: "RTCHaishinKit", package: "HaishinKit.swift")
             ],
             resources: [
             ]

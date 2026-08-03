@@ -12,15 +12,16 @@
 | RTSP | ✅ | ❌ | `rtsp://host:8554/live` |
 | SRT | ✅ | ✅ | `srt://host:9000` |
 | UDP | ✅ | ❌ | `udp://host:5004` |
-| WHIP | ✅ | ❌ | `https://host/whip` |
+| WHIP | ✅ | ✅ (alpha) | `https://host/whip` |
+| WHEP | ❌ | ✅ (alpha) | `https://host/whep` |
 
-通过 `StreamingProtocol` 显式指定协议（默认 `rtmp`）。
+通过 `StreamingProtocol` 显式指定协议（默认 `rtmp`）。iOS 的 WHIP/WHEP 基于 `RTCHaishinKit`（H264/OPUS），需启用 Flutter SPM。
 
 ---
 
 ## ⚙️ 技术基础
 - **Android**：基于 [`com.github.pedroSG94.RootEncoder:library:2.8.0`](https://github.com/pedroSG94/RootEncoder)  
-- **iOS**：基于 [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)（含 `SRTHaishinKit`）  
+- **iOS**：基于 [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)（含 `SRTHaishinKit`，以及用于 WHIP/WHEP alpha 的 `RTCHaishinKit`）  
 
 通过这两个成熟的底层库，`rtmp_streaming` 提供了跨平台一致的 API 接口，简化了开发者的使用成本。
 
@@ -46,7 +47,7 @@
 - ⏹️ 停止本地视频录制：`stopRecording`  
 - 📡 开始录制并推送直播流：`startVideoRecordingAndStreaming`  
 - ⏹️ 停止录制或推送直播流：`stopRecordingOrStreaming`  
-- 📡 开始推送直播流：`startVideoStreaming`（参数：`url`、`protocol`、`bitrate`；Android WHIP 可选 `whipToken`）  
+- 📡 开始推送直播流：`startVideoStreaming`（参数：`url`、`protocol`、`bitrate`；WHIP 可选 `whipToken`）  
 - ⏹️ 停止推送直播流：`stopStreaming`  
 - 🔄 切换摄像头：`switchCamera`  
 - 🔊 切换麦克风采集开/关：`switchAudio`  
@@ -133,7 +134,18 @@ await controller.startVideoStreaming(
 //   protocol: StreamingProtocol.srt,
 // );
 
-// Android RTSP / UDP / WHIP
+// WHIP（Android + iOS alpha）/ WHEP（仅 iOS alpha）
+// await controller.startVideoStreaming(
+//   'https://your-server/whip',
+//   protocol: StreamingProtocol.whip,
+//   whipToken: 'optional-bearer-token',
+// );
+// await controller.startVideoStreaming(
+//   'https://your-server/whep',
+//   protocol: StreamingProtocol.whep,
+// );
+
+// Android RTSP / UDP
 // await controller.startVideoStreaming(
 //   'rtsp://your-server:8554/live',
 //   protocol: StreamingProtocol.rtsp,

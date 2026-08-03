@@ -15,8 +15,8 @@ enum CameraLensDirection { front, back, external }
 ///
 /// Platform support:
 /// - Android: [rtmp], [rtsp], [srt], [udp], [whip]
-/// - iOS: [rtmp], [srt] only
-enum StreamingProtocol { rtmp, rtsp, srt, udp, whip }
+/// - iOS: [rtmp], [srt], [whip], [whep] ([whip]/[whep] via RTCHaishinKit, alpha)
+enum StreamingProtocol { rtmp, rtsp, srt, udp, whip, whep }
 
 String serializeStreamingProtocol(StreamingProtocol protocol) {
   switch (protocol) {
@@ -30,14 +30,20 @@ String serializeStreamingProtocol(StreamingProtocol protocol) {
       return 'udp';
     case StreamingProtocol.whip:
       return 'whip';
+    case StreamingProtocol.whep:
+      return 'whep';
   }
 }
 
 bool isStreamingProtocolSupported(StreamingProtocol protocol) {
-  if (Platform.isAndroid) return true;
+  if (Platform.isAndroid) {
+    return protocol != StreamingProtocol.whep;
+  }
   if (Platform.isIOS) {
     return protocol == StreamingProtocol.rtmp ||
-        protocol == StreamingProtocol.srt;
+        protocol == StreamingProtocol.srt ||
+        protocol == StreamingProtocol.whip ||
+        protocol == StreamingProtocol.whep;
   }
   return false;
 }
@@ -873,8 +879,12 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// Start streaming to [url] using [protocol].
   ///
-  /// Defaults to [StreamingProtocol.rtmp]. iOS only supports [StreamingProtocol.rtmp]
-  /// and [StreamingProtocol.srt].
+  /// Defaults to [StreamingProtocol.rtmp].
+  ///
+  /// iOS supports [StreamingProtocol.rtmp], [StreamingProtocol.srt],
+  /// [StreamingProtocol.whip], and [StreamingProtocol.whep].
+  /// Android supports [StreamingProtocol.rtmp], [StreamingProtocol.rtsp],
+  /// [StreamingProtocol.srt], [StreamingProtocol.udp], and [StreamingProtocol.whip].
   ///
   /// Throws a [CameraException] if the capture fails or the protocol is
   /// unsupported on this platform.
