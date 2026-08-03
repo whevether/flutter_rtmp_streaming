@@ -51,11 +51,11 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   bool isFlashLight = false; // false表示关闭闪光灯，true表示打开闪光灯
   CameraDescription? _cameraDesc;
   final TextEditingController _textFieldController =
-      TextEditingController(text: "rtmp://192.168.2.81/live/live");
+      TextEditingController(text: "rtmp://192.168.2.81/live/livestream");
   late final TextEditingController _multiUrl1Controller;
   late final TextEditingController _multiUrl2Controller;
   StreamingProtocol _selectedProtocol = StreamingProtocol.rtmp;
-  StreamingProtocol _multiProtocol1 = StreamingProtocol.srt;
+  StreamingProtocol _multiProtocol1 = StreamingProtocol.rtmp;
   StreamingProtocol _multiProtocol2 = StreamingProtocol.srt;
   bool _isMultiStreaming = false;
 
@@ -65,9 +65,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         .toList(growable: false);
   }
 
-  /// iOS multi-stream demo: SRT only.
+  /// iOS multi-stream demo: RTMP + SRT.
   List<StreamingProtocol> get _multiProtocols =>
-      const [StreamingProtocol.srt];
+      const [StreamingProtocol.rtmp, StreamingProtocol.srt];
 
   /// RootEncoder 2.7.0+：BT.709 与 RTMP ping/RTT 示例
   bool _forceBt709 = false;
@@ -91,12 +91,11 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   @override
   void initState() {
     _multiUrl1Controller = TextEditingController(
-      text:
-          'srt://192.168.2.81:10080?streamid=#!::r=live/livestream,m=publish',
+      text: 'rtmp://192.168.2.81/live/livestream',
     );
     _multiUrl2Controller = TextEditingController(
       text:
-          'srt://192.168.2.81:10080?streamid=#!::r=live/livestream2,m=publish',
+          'srt://192.168.2.81:10080?streamid=#!::r=live/livestream,m=publish',
     );
     onInit();
     WidgetsBinding.instance.addObserver(this);
@@ -1141,7 +1140,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               );
             }
 
-            final hint = 'iOS 多路示例：两路均为 SRT';
+            const hint = 'iOS 多路示例：一路 RTMP + 一路 SRT';
 
             return AlertDialog(
               title: const Text('多路推流（双目标）'),

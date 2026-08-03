@@ -301,16 +301,16 @@ await controller.clearOverlay();
 ---
 
 ### 多路推流：`startMultiStreaming`
-**仅 iOS**。不含 WHIP/WHEP。Example 默认双路 SRT，可用 **Stop dest1 only** 只停一路。
+**仅 iOS**。不含 WHIP/WHEP。Example 默认一路 RTMP + 一路 SRT，可用 **Stop dest1 only** 只停一路。
 ```dart
 await controller.startMultiStreaming([
   StreamDestination(
-    url: 'srt://a:10080?streamid=#!::r=live/livestream,m=publish',
-    protocol: StreamingProtocol.srt,
+    url: 'rtmp://a/live/live',
+    protocol: StreamingProtocol.rtmp,
     id: 'a',
   ),
   StreamDestination(
-    url: 'srt://a:10080?streamid=#!::r=live/livestream2,m=publish',
+    url: 'srt://a:10080?streamid=#!::r=live/livestream,m=publish',
     protocol: StreamingProtocol.srt,
     id: 'b',
   ),

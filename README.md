@@ -281,16 +281,16 @@ await controller.clearOverlay();
 ---
 
 ### Multi-streaming: `startMultiStreaming`
-**iOS only.** WHIP/WHEP are not allowed. Example app defaults to two SRT endpoints (`dest1` / `dest2`); use **Stop dest1 only** to drop one path.
+**iOS only.** WHIP/WHEP are not allowed. Example app defaults to one RTMP + one SRT (`dest1` / `dest2`); use **Stop dest1 only** to drop one path.
 ```dart
 await controller.startMultiStreaming([
   StreamDestination(
-    url: 'srt://a:10080?streamid=#!::r=live/livestream,m=publish',
-    protocol: StreamingProtocol.srt,
+    url: 'rtmp://a/live/live',
+    protocol: StreamingProtocol.rtmp,
     id: 'a',
   ),
   StreamDestination(
-    url: 'srt://a:10080?streamid=#!::r=live/livestream2,m=publish',
+    url: 'srt://a:10080?streamid=#!::r=live/livestream,m=publish',
     protocol: StreamingProtocol.srt,
     id: 'b',
   ),

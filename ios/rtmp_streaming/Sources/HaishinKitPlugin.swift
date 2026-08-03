@@ -47,6 +47,18 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private var eventSink: FlutterEventSink?
   //  //事件渠道
   //  private var eventChannel: FlutterEventChannel?
+
+  /// Flutter platform channels require the platform (main) thread.
+  private func emitEvent(_ payload: [String: Any]) {
+    guard let eventSink else { return }
+    if Thread.isMainThread {
+      eventSink(payload)
+    } else {
+      DispatchQueue.main.async {
+        eventSink(payload)
+      }
+    }
+  }
   //纹理
   private var texture: HKStreamFlutterTexture?
   //连接
@@ -172,6 +184,21 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     try? await srtConnection?.close()
     srtStream = nil
     srtConnection = nil
+  }
+
+  /// Maps SRTHaishinKit errors to actionable Flutter messages.
+  private static func describeSrtError(_ error: Error) -> String {
+    if let srt = error as? SRTConnection.Error {
+      switch srt {
+      case .unsupportedUri:
+        return "Invalid SRT URL (unsupportedUri). Prefer: srt://host:10080?streamid=#!::r=live/livestream,m=publish — streamid with # is applied as a socket option."
+      case .failedToConnect(let reason):
+        return "SRT connect rejected: \(reason)"
+      case .invalidState:
+        return "SRT connection invalid state"
+      }
+    }
+    return error.localizedDescription
   }
 
   private func tearDownRtcSession() async {
@@ -375,24 +402,24 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
             } else {
               Task { await self.publish(name: newName) }
             }
-            self.eventSink?(["eventType": "success",
+            self.emitEvent(["eventType": "success",
                              "errorDescription": "connection success"])
           case RTMPConnection.Code.connectFailed.rawValue:
             guard retries <= 3 else {
-              self.eventSink?(["eventType": "error",
+              self.emitEvent(["eventType": "error",
                                "errorDescription": "connection failed " + status.code])
               return
             }
             retries += 1
             try await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(retries)) * 1_000_000_000))
             try await newRtmpConnection.connect(newUrl)
-            self.eventSink?(["eventType": "rtmp_retry",
+            self.emitEvent(["eventType": "rtmp_retry",
                              "errorDescription": "connection failed " + status.code])
           case RTMPConnection.Code.connectClosed.rawValue:
-            self.eventSink?(["eventType": "camera_closing",
+            self.emitEvent(["eventType": "camera_closing",
                              "errorDescription": "connection error " + status.code])
           default:
-            self.eventSink?(["eventType": "error",
+            self.emitEvent(["eventType": "error",
                              "errorDescription": "connection error " + status.code])
             break
           }
@@ -411,7 +438,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       try await newRtmpConnection.connect(newUrl)
       return nil
     } catch {
-      eventSink?(["eventType" : "rtmp_stopped",
+      emitEvent(["eventType" : "rtmp_stopped",
                   "errorDescription" : "rtmp disconnected"])
       return FlutterError(code: "startVideoStreamingError", message: "catch error", details: nil)
     }
@@ -485,10 +512,10 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         for await readyState in await session.readyState {
           switch readyState {
           case .open:
-            self.eventSink?(["eventType": "success",
+            self.emitEvent(["eventType": "success",
                              "errorDescription": "connection success"])
           case .closed:
-            self.eventSink?(["eventType": "camera_closing",
+            self.emitEvent(["eventType": "camera_closing",
                              "errorDescription": "\(protocolName) closed"])
           default:
             break
@@ -497,12 +524,12 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       }
 
       try await session.connect { [weak self] in
-        self?.eventSink?(["eventType": "rtmp_stopped",
+        self?.emitEvent(["eventType": "rtmp_stopped",
                           "errorDescription": "\(protocolName) disconnected"])
       }
       return nil
     } catch {
-      eventSink?(["eventType": "rtmp_stopped",
+      emitEvent(["eventType": "rtmp_stopped",
                   "errorDescription": "\(protocolName) disconnected"])
       await tearDownRtcSession()
       return FlutterError(
@@ -528,10 +555,10 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           details: nil
         )
       }
-      guard let srtUrl = URL(string: url) else {
+      guard let parsed = SrtURLHelper.parse(url) else {
         return FlutterError(
           code: "startVideoStreamingError",
-          message: "Invalid SRT URL",
+          message: "Invalid SRT URL. Use e.g. srt://host:10080?streamid=#!::r=live/livestream,m=publish",
           details: nil
         )
       }
@@ -552,18 +579,22 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         bitRateMode: nil
       )
 
-      try await connection.connect(srtUrl)
+      for option in parsed.preOptions {
+        try await connection.setSocketOption(option)
+      }
+      try await connection.connect(parsed.connectURL)
       await stream.publish()
-      eventSink?(["eventType": "success",
-                   "errorDescription": "connection success"])
+      emitEvent(["eventType": "success",
+                 "errorDescription": "connection success"])
       return nil
     } catch {
-      eventSink?(["eventType": "rtmp_stopped",
-                  "errorDescription": "srt disconnected"])
+      let message = Self.describeSrtError(error)
+      emitEvent(["eventType": "rtmp_stopped",
+                 "errorDescription": "srt disconnected: \(message)"])
       await tearDownSrtSession()
       return FlutterError(
         code: "startVideoStreamingError",
-        message: error.localizedDescription,
+        message: message,
         details: nil
       )
     }
@@ -594,15 +625,22 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       let endpoint = MultiEndpoint(id: id, protocolName: protocolName)
       do {
         if protocolName == "srt" {
-          guard let srtUrl = URL(string: url), url.lowercased().hasPrefix("srt") else {
-            return FlutterError(code: "startMultiStreamingError", message: "Invalid SRT URL", details: nil)
+          guard let parsed = SrtURLHelper.parse(url) else {
+            return FlutterError(
+              code: "startMultiStreamingError",
+              message: "Invalid SRT URL. Use e.g. srt://host:10080?streamid=#!::r=live/livestream,m=publish",
+              details: nil
+            )
           }
           let connection = SRTConnection()
           let stream = SRTStream(connection: connection)
           endpoint.srtConnection = connection
           endpoint.srtStream = stream
           await mixer?.addOutput(stream, startRunning: false)
-          try await connection.connect(srtUrl)
+          for option in parsed.preOptions {
+            try await connection.setSocketOption(option)
+          }
+          try await connection.connect(parsed.connectURL)
           await stream.publish()
         } else {
           guard let uri = URL(string: url), let name = uri.pathComponents.last else {
@@ -619,7 +657,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           try await connection.connect(connectUrl)
           _ = try? await stream.publish(name)
         }
-        eventSink?([
+        emitEvent([
           "eventType": "success",
           "errorDescription": "connection success",
           "streamId": id
@@ -629,7 +667,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         await tearDownMultiEndpoints()
         return FlutterError(
           code: "startMultiStreamingError",
-          message: error.localizedDescription,
+          message: Self.describeSrtError(error),
           details: id
         )
       }
