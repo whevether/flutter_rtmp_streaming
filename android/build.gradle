@@ -26,7 +26,7 @@ apply plugin: 'com.android.library'
 android {
     namespace 'com.app.rtmp_streaming'
     compileSdkVersion 37
-    buildToolsVersion "37.1.0"
+    buildToolsVersion "37.0.0"
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
