@@ -897,6 +897,21 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       return FlutterError(code: "setAudioSettingsError", message: "catch error", details: nil)
     }
   }
+  /// Match encoder videoSize to offscreen canvas so stream/preview don't letterbox after overlay.
+  private func syncStreamVideoSizeToOverlayCanvas(_ mixer: MediaMixerHandler) async {
+    let size = await mixer.overlayOutputSize()
+    guard size.width > 1, size.height > 1 else { return }
+    _ = await setVideoSettings(
+      bitrate: nil,
+      width: NSNumber(value: Double(size.width)),
+      height: NSNumber(value: Double(size.height)),
+      frameInterval: nil,
+      profileLevel: nil,
+      expectedFrameRate: nil,
+      bitRateMode: nil
+    )
+  }
+
   //设置视频（含 HaishinKit 2.2.1+ 码率模式、2.2.2+ expectedFrameRate → RTMP onMetaData framerate）
   private func setVideoSettings(
     bitrate: NSNumber?,
@@ -1588,7 +1603,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         return 0xFFFF0000
       }()
       let position = arguments["position"] as? String
-      let scale = (arguments["scale"] as? NSNumber)?.doubleValue ?? 50
+      let scale = (arguments["scale"] as? NSNumber)?.doubleValue ?? 100
       Task {
         do {
           try await mixer.setOverlayText(
@@ -1598,6 +1613,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
             position: position,
             scale: CGFloat(scale)
           )
+          await syncStreamVideoSizeToOverlayCanvas(mixer)
           result(nil)
         } catch {
           result(FlutterError(code: "setOverlayTextError", message: error.localizedDescription, details: nil))
@@ -1612,10 +1628,11 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         return
       }
       let position = arguments["position"] as? String
-      let scale = (arguments["scale"] as? NSNumber)?.doubleValue ?? 50
+      let scale = (arguments["scale"] as? NSNumber)?.doubleValue ?? 100
       Task {
         do {
           try await mixer.setOverlayImage(filePath: filePath, position: position, scale: CGFloat(scale))
+          await syncStreamVideoSizeToOverlayCanvas(mixer)
           result(nil)
         } catch {
           result(FlutterError(code: "setOverlayImageError", message: error.localizedDescription, details: nil))
@@ -1630,27 +1647,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         await mixer.clearOverlay()
         result(nil)
       }
-    case "prepareScreenBroadcastConfig":
-      guard
-        let arguments = call.arguments as? [String: Any?],
-        let url = arguments["url"] as? String,
-        let appGroupId = arguments["appGroupId"] as? String else {
-        result(FlutterError(code: "prepareScreenBroadcastConfigError", message: "params empty", details: nil))
-        return
-      }
-      let protocolName = (arguments["protocol"] as? String) ?? "rtmp"
-      guard let defaults = UserDefaults(suiteName: appGroupId) else {
-        result(FlutterError(
-          code: "prepareScreenBroadcastConfigError",
-          message: "App Group '\(appGroupId)' unavailable. Enable App Groups for Runner + Extension.",
-          details: nil
-        ))
-        return
-      }
-      defaults.set(url, forKey: "rtmp_streaming.broadcast.url")
-      defaults.set(protocolName, forKey: "rtmp_streaming.broadcast.protocol")
-      defaults.synchronize()
-      result(nil)
     case "startMultiStreaming":
       guard
         let arguments = call.arguments as? [String: Any?],

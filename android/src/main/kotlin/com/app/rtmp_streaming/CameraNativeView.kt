@@ -74,7 +74,6 @@ import com.pedro.library.util.streamclient.RtmpStreamClient
 import com.pedro.library.util.streamclient.WhipStreamClient
 import com.pedro.library.whip.WhipStream
 import io.flutter.plugin.common.MethodChannel
-import io.flutter.plugin.common.PluginRegistry
 import io.flutter.plugin.platform.PlatformView
 import com.pedro.library.view.OpenGlView
 import com.pedro.library.util.BitrateAdapter
@@ -128,8 +127,6 @@ class CameraNativeView(
     /** 因 Surface 销毁暂停推流时，忽略 stopStream 触发的 onDisconnect */
     private var isRestoringFromSurfaceDestroy = false
     private var currentProtocol: String = "rtmp"
-    private var multiSession: MultiStreamingSession? = null
-    private var screenController: ScreenStreamingController? = null
     init {
 //        glView.isKeepAspectRatio = true
         glView.setAspectRatioMode(AspectRatioMode.Adjust)
@@ -583,29 +580,6 @@ class CameraNativeView(
     }
 
     private fun stopActiveStream(restorePreview: Boolean = true) {
-        multiSession?.let {
-            try {
-                it.stopAll()
-            } catch (e: Exception) {
-                Log.e("CameraNativeView", "stop multi stream failed", e)
-            }
-            multiSession = null
-            if (restorePreview && isSurfaceCreated) {
-                startPreview(cameraName)
-            }
-            return
-        }
-        screenController?.let {
-            try {
-                it.stop()
-            } catch (e: Exception) {
-                Log.e("CameraNativeView", "stop screen stream failed", e)
-            }
-            if (restorePreview && isSurfaceCreated) {
-                startPreview(cameraName)
-            }
-            return
-        }
         whipStream?.let { stream ->
             try {
                 if (stream.isStreaming) stream.stopStream()
@@ -1408,10 +1382,24 @@ class CameraNativeView(
             clearOverlayInternal()
             val render = TextObjectFilterRender()
             val color = colorArgb ?: Color.RED
-            val size = (fontSize ?: 22.0).toFloat()
+            // Paint size in bitmap pixels; larger = sharper when mapped 1:1 via setDefaultScale.
+            val density = activity?.resources?.displayMetrics?.density ?: 1f
+            val size = ((fontSize ?: 22.0).toFloat() * density).coerceAtLeast(12f)
             render.setText(text, size, color)
-            val s = (scale ?: 50.0).toFloat()
-            render.setScale(s, s)
+            val encoder = genericCamera.glInterface?.encoderSize
+            val streamW = genericCamera.streamWidth.takeIf { it > 0 }
+                ?: encoder?.x?.takeIf { it > 0 }
+                ?: 1280
+            val streamH = genericCamera.streamHeight.takeIf { it > 0 }
+                ?: encoder?.y?.takeIf { it > 0 }
+                ?: 720
+            // Natural pixel mapping so fontSize controls on-screen size (avoids 50% upscale blur).
+            render.setDefaultScale(streamW, streamH)
+            val scaleFactor = ((scale ?: 100.0) / 100.0).toFloat().coerceIn(0.1f, 4f)
+            if (kotlin.math.abs(scaleFactor - 1f) > 0.01f) {
+                val current = render.scale
+                render.setScale(current.x * scaleFactor, current.y * scaleFactor)
+            }
             render.setPosition(translateTo(position))
             genericCamera.glInterface?.setFilter(render)
             spriteGestureController.setBaseObjectFilterRender(render)
@@ -1440,11 +1428,22 @@ class CameraNativeView(
                 return
             }
             val render = ImageObjectFilterRender()
-            genericCamera.glInterface?.setFilter(render)
             render.setImage(bitmap)
-            val s = (scale ?: 50.0).toFloat()
-            render.setScale(s, s)
+            val encoder = genericCamera.glInterface?.encoderSize
+            val streamW = genericCamera.streamWidth.takeIf { it > 0 }
+                ?: encoder?.x?.takeIf { it > 0 }
+                ?: 1280
+            val streamH = genericCamera.streamHeight.takeIf { it > 0 }
+                ?: encoder?.y?.takeIf { it > 0 }
+                ?: 720
+            render.setDefaultScale(streamW, streamH)
+            val scaleFactor = ((scale ?: 100.0) / 100.0).toFloat().coerceIn(0.1f, 4f)
+            if (kotlin.math.abs(scaleFactor - 1f) > 0.01f) {
+                val current = render.scale
+                render.setScale(current.x * scaleFactor, current.y * scaleFactor)
+            }
             render.setPosition(translateTo(position))
+            genericCamera.glInterface?.setFilter(render)
             spriteGestureController.setBaseObjectFilterRender(render)
             overlayFilter = render
             result.success(null)
@@ -1461,137 +1460,6 @@ class CameraNativeView(
             result.error("clearOverlay", e.message, null)
         }
     }
-
-    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-    fun startMultiStreaming(
-        destinations: List<Map<String, Any?>>?,
-        bitrate: Int?,
-        result: MethodChannel.Result
-    ) {
-        if (destinations.isNullOrEmpty()) {
-            result.error("startMultiStreaming", "destinations empty", null)
-            return
-        }
-        val ctx = activity
-        if (ctx == null) {
-            result.error("startMultiStreaming", "activity null", null)
-            return
-        }
-        try {
-            if (genericCamera.isStreaming) genericCamera.stopStream()
-            whipStream?.let {
-                if (it.isStreaming) it.stopStream()
-                if (it.isOnPreview) it.stopPreview()
-                it.release()
-            }
-            whipStream = null
-            multiSession?.stopAll()
-            multiSession = null
-
-            val mapped = destinations.mapIndexed { index, d ->
-                val url = d["url"] as? String
-                    ?: throw IllegalArgumentException("url required")
-                val protocol = ((d["protocol"] as? String) ?: "rtmp").lowercase(Locale.getDefault())
-                if (protocol == "whip" || protocol == "whep") {
-                    throw IllegalArgumentException("WHIP/WHEP not allowed in multi-streaming")
-                }
-                val id = (d["id"] as? String) ?: "$protocol-$index"
-                MultiStreamingSession.Destination(id, protocol, url)
-            }
-            if (genericCamera.isOnPreview) {
-                try { genericCamera.stopCamera() } catch (_: Exception) {}
-            }
-            val streamingSize = CameraUtils.computeBestPreviewSize(ctx, cameraName, preset)
-            val size = streamingSize["size"] as Size
-            val session = MultiStreamingSession(ctx, dartMessenger, glView, mapped)
-            val vBit = bitrate ?: customVideoBitrate ?: (streamingSize["bitrate"] as Int)
-            val fpsVal = customVideoFps ?: 30
-            if (!session.prepareAndStart(size.width, size.height, fpsVal, vBit, aBitrate)) {
-                session.stopAll()
-                result.error("startMultiStreaming", "prepare failed", null)
-                return
-            }
-            multiSession = session
-            currentProtocol = "multi"
-            result.success(null)
-        } catch (e: Exception) {
-            result.error("startMultiStreaming", e.message, null)
-        }
-    }
-
-    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-    fun stopStreamingDestination(id: String?, result: MethodChannel.Result) {
-        if (id.isNullOrEmpty()) {
-            result.error("stopStreamingDestination", "id required", null)
-            return
-        }
-        val session = multiSession
-        if (session == null) {
-            result.error("stopStreamingDestination", "no multi session", null)
-            return
-        }
-        if (!session.stopDestination(id)) {
-            result.error("stopStreamingDestination", "id not found", null)
-            return
-        }
-        if (!session.hasSlots()) {
-            session.stopAll()
-            multiSession = null
-            currentProtocol = "rtmp"
-            try {
-                startPreview(cameraName)
-            } catch (_: Exception) {}
-        }
-        result.success(null)
-    }
-
-    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
-    fun startScreenStreaming(
-        url: String?,
-        protocol: String?,
-        bitrate: Int?,
-        result: MethodChannel.Result
-    ) {
-        if (url.isNullOrEmpty()) {
-            result.error("startScreenStreaming", "url required", null)
-            return
-        }
-        val act = activity
-        if (act == null) {
-            result.error("startScreenStreaming", "activity null", null)
-            return
-        }
-        try {
-            if (genericCamera.isStreaming) genericCamera.stopStream()
-            multiSession?.stopAll()
-            multiSession = null
-            if (genericCamera.isOnPreview) {
-                try { genericCamera.stopCamera() } catch (_: Exception) {}
-            }
-            val controller = screenController
-                ?: ScreenStreamingController(act, dartMessenger).also { screenController = it }
-            controller.start(url, protocol ?: "rtmp", bitrate ?: vBitrate, result)
-            currentProtocol = "screen"
-        } catch (e: Exception) {
-            result.error("startScreenStreaming", e.message, null)
-        }
-    }
-
-    fun stopScreenStreaming(result: MethodChannel.Result) {
-        try {
-            screenController?.stop()
-            currentProtocol = "rtmp"
-            try {
-                startPreview(cameraName)
-            } catch (_: Exception) {}
-            result.success(null)
-        } catch (e: Exception) {
-            result.error("stopScreenStreaming", e.message, null)
-        }
-    }
-
-    fun screenActivityResultListener(): PluginRegistry.ActivityResultListener? =
-        screenController
 
     fun setPitchShift(pitch: Double?, result: MethodChannel.Result) {
         if (pitch == null) {

@@ -10,7 +10,7 @@
 |------|---------|-----|----------|
 | RTMP | ✅ | ✅ | `rtmp://host/live/stream` |
 | RTSP | ✅ | ❌ | `rtsp://host:8554/live` |
-| SRT | ✅ | ✅ | `srt://host:9000` |
+| SRT | ✅ | ✅ | `srt://host:10080?streamid=#!::r=live/livestream,m=publish` |
 | UDP | ✅ | ❌ | `udp://host:5004` |
 | WHIP | ✅ | ✅ (alpha) | `https://host/whip` |
 | WHEP | ❌ | ✅ (alpha) | `https://host/whep` |
@@ -60,6 +60,7 @@
 - 📊 获取流信息：`getStreamStatistics`  
 - 🗑️ 销毁插件：`dispose`  
 - 📸 直播时截图：`takePicture`  
+- 🖼️ 叠字/水印：`setOverlayText` / `setOverlayImage` / `clearOverlay`  
 
 ---
 
@@ -73,6 +74,7 @@
 - ⚙️ 设置直播预设配置：`setSessionPreset`  
 - 🖼️ 设置直播屏幕宽高：`setScreenSettings`  
 - 🎞️ `setVideoSettings` 扩展参数：`expectedFrameRate`、`bitRateMode`（HaishinKit 2.2.1+ / 2.2.2+）、`profileLevel`  
+- 📡 多路推流：`startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP）  
 
 ---
 
@@ -82,9 +84,6 @@
 - 🎨 设置滤镜：`setFilter`  
   > 滤镜 `type` 值请查看源码 [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt)  
 - ❌ 移除滤镜：`removeFilter`  
-- 🖼️ 叠字/水印：`setOverlayText` / `setOverlayImage` / `clearOverlay`（双端）  
-- 📡 多路推流：`startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP；Android MultiStream 为实验 API）  
-- 🖥️ 录屏推流：`startScreenStreaming` / `stopScreenStreaming`（Android）；iOS 用 Broadcast Extension + `prepareScreenBroadcastConfig`  
 - 🎙️ 变调：`setPitchShift`（RootEncoder `PitchShiftEffect`；传 `1.0` 关闭）  
 - 🔒 曝光锁定：`lockExposure` / `unlockExposure` / `isExposureLocked`（须在预览或推流启动后）  
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
@@ -135,7 +134,7 @@ await controller.startVideoStreaming(
 
 // SRT 示例（双端）
 // await controller.startVideoStreaming(
-//   'srt://your-server:9000',
+//   'srt://your-server:10080?streamid=#!::r=live/livestream,m=publish',
 //   protocol: StreamingProtocol.srt,
 // );
 
@@ -288,7 +287,7 @@ await controller.setPitchShift(1.0); // 关闭
 ---
 
 ### 叠字/水印：`setOverlayText` / `setOverlayImage` / `clearOverlay`
-双端可用。
+双端可用。`fontSize` 控制字形大小；`scale` 为相对自然尺寸的百分比（`100` = 1:1）。
 ```dart
 await controller.setOverlayText(
   text: 'LIVE',
@@ -302,19 +301,21 @@ await controller.clearOverlay();
 ---
 
 ### 多路推流：`startMultiStreaming`
-不含 WHIP/WHEP。Android 使用实验性 `MultiStream`。
+**仅 iOS**。不含 WHIP/WHEP。Example 默认双路 SRT，可用 **Stop dest1 only** 只停一路。
 ```dart
 await controller.startMultiStreaming([
-  StreamDestination(url: 'rtmp://a/live/1', protocol: StreamingProtocol.rtmp, id: 'a'),
-  StreamDestination(url: 'srt://b:9000', protocol: StreamingProtocol.srt, id: 'b'),
+  StreamDestination(
+    url: 'srt://a:10080?streamid=#!::r=live/livestream,m=publish',
+    protocol: StreamingProtocol.srt,
+    id: 'a',
+  ),
+  StreamDestination(
+    url: 'srt://a:10080?streamid=#!::r=live/livestream2,m=publish',
+    protocol: StreamingProtocol.srt,
+    id: 'b',
+  ),
 ]);
 ```
-
----
-
-### 录屏推流
-- **Android**：`startScreenStreaming` / `stopScreenStreaming`（MediaProjection）。
-- **iOS**：`prepareScreenBroadcastConfig` + Broadcast Upload Extension（见 [example/ios/BroadcastUploadExtension/README.md](example/ios/BroadcastUploadExtension/README.md)）。
 
 ---
 

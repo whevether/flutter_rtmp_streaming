@@ -18,6 +18,7 @@ final class MediaMixerHandler: NSObject {
   private lazy var mixer = MediaMixer(multiTrackAudioMixingEnabled: false)
   private var overlayObject: ScreenObject?
   private var screenConfiguredForOverlay = false
+  private var lastCaptureSize: CGSize = .zero
   
   override init() {
     super.init()
@@ -66,9 +67,20 @@ final class MediaMixerHandler: NSObject {
     }
     
     guard let videoOrientation = orientation else { return}
-    Task { await mixer.setVideoOrientation(videoOrientation) }
+    Task {
+      await mixer.setVideoOrientation(videoOrientation)
+      // Keep offscreen canvas matched to interface orientation while overlay is active.
+      if screenConfiguredForOverlay {
+        await Self.applyOverlayScreenGeometry(
+          mixer: mixer,
+          texture: texture,
+          orientation: videoOrientation
+        )
+      }
+    }
   }
 #endif
+
   // 获取是否开启了声音
   func getHasAudio() async -> Bool{
     let isMuted = await !mixer.audioMixerSettings.isMuted
@@ -188,7 +200,9 @@ final class MediaMixerHandler: NSObject {
     if let presetString = Self.sessionPresetString(for: resolution) {
       await setSessionPreset(sessionPreset: presetString)
     }
-    return Self.targetSize(for: resolution, device: device)
+    let size = Self.targetSize(for: resolution, device: device)
+    lastCaptureSize = size
+    return size
   }
 
 #if os(iOS)
@@ -205,18 +219,64 @@ final class MediaMixerHandler: NSObject {
   }
 #endif
 
+  private static func currentInterfaceOrientation() -> AVCaptureVideoOrientation {
+#if canImport(UIKit)
+    if #available(iOS 13.0, *),
+       let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+       let orientation = DeviceUtil.videoOrientation(by: windowScene.interfaceOrientation) {
+      return orientation
+    }
+#endif
+    return .portrait
+  }
+
+  private static func isPortrait(_ orientation: AVCaptureVideoOrientation) -> Bool {
+    orientation == .portrait || orientation == .portraitUpsideDown
+  }
+
+  /// Align offscreen canvas with capture size + phone orientation (HaishinKit sample uses 720x1280 in portrait).
+  @ScreenActor
+  private static func applyOverlayScreenGeometry(
+    mixer: MediaMixer,
+    texture: HKStreamFlutterTexture?,
+    orientation: AVCaptureVideoOrientation
+  ) async {
+    var base = texture?.bounds ?? .zero
+    if base.width < 2 || base.height < 2 {
+      base = CGSize(width: 720, height: 1280)
+    }
+    let shortSide = min(base.width, base.height)
+    let longSide = max(base.width, base.height)
+    let screenSize = isPortrait(orientation)
+      ? CGSize(width: shortSide, height: longSide)
+      : CGSize(width: longSide, height: shortSide)
+    mixer.screen.size = screenSize
+    texture?.bounds = screenSize
+  }
+
+  @ScreenActor
   private func ensureOverlayScreenConfigured() async {
     guard !screenConfiguredForOverlay else { return }
+    let orientation = Self.currentInterfaceOrientation()
+    await mixer.setVideoOrientation(orientation)
+
+    // Prefer capture target size when texture bounds are still unset.
+    if (texture?.bounds.width ?? 0) < 2, lastCaptureSize.width > 1 {
+      texture?.bounds = lastCaptureSize
+    }
+    await Self.applyOverlayScreenGeometry(
+      mixer: mixer,
+      texture: texture,
+      orientation: orientation
+    )
+
     var videoMixerSettings = await mixer.videoMixerSettings
     videoMixerSettings.mode = .offscreen
     await mixer.setVideoMixerSettings(videoMixerSettings)
-    let size = await mixer.screen.size
-    if size == .zero {
-      await mixer.screen.size = CGSize(width: 720, height: 1280)
-    }
     screenConfiguredForOverlay = true
   }
 
+  @ScreenActor
   private func applyPosition(_ object: ScreenObject, position: String?) {
     switch position {
     case "topLeft":
@@ -237,6 +297,13 @@ final class MediaMixerHandler: NSObject {
     }
   }
 
+  /// Current offscreen canvas size (valid after overlay is configured).
+  @ScreenActor
+  func overlayOutputSize() -> CGSize {
+    mixer.screen.size
+  }
+
+  @ScreenActor
   func setOverlayText(
     text: String,
     fontSize: CGFloat,
@@ -252,17 +319,23 @@ final class MediaMixerHandler: NSObject {
     let textObject = TextScreenObject()
     textObject.string = text
     let uiColor = Self.uiColor(argb: colorArgb)
-    textObject.attributes = [
+    let attributes: [NSAttributedString.Key: Any] = [
       .font: UIFont.boldSystemFont(ofSize: fontSize),
       .foregroundColor: uiColor
     ]
-    let dim = max(scale * 2, 40)
-    textObject.size = CGSize(width: dim * 4, height: dim)
+    textObject.attributes = attributes
+    let measured = (text as NSString).size(withAttributes: attributes)
+    let factor = max(scale / 100.0, 0.1)
+    textObject.size = CGSize(
+      width: max(measured.width * factor, fontSize),
+      height: max(measured.height * factor, fontSize)
+    )
     applyPosition(textObject, position: position)
     try await mixer.screen.addChild(textObject)
     overlayObject = textObject
   }
 
+  @ScreenActor
   func setOverlayImage(filePath: String, position: String?, scale: CGFloat) async throws {
     await ensureOverlayScreenConfigured()
     if let existing = overlayObject {
@@ -274,17 +347,30 @@ final class MediaMixerHandler: NSObject {
     }
     let imageObject = ImageScreenObject()
     imageObject.cgImage = image
-    let w = max(scale * 2, 40)
-    imageObject.size = CGSize(width: w, height: w)
+    let factor = max(scale / 100.0, 0.1)
+    let w = CGFloat(image.width) * factor
+    let h = CGFloat(image.height) * factor
+    imageObject.size = CGSize(width: max(w, 1), height: max(h, 1))
     applyPosition(imageObject, position: position)
     try await mixer.screen.addChild(imageObject)
     overlayObject = imageObject
   }
 
+  @ScreenActor
   func clearOverlay() async {
     if let existing = overlayObject {
       try? await mixer.screen.removeChild(existing)
       overlayObject = nil
+    }
+    // Restore passthrough so preview returns to pre-overlay framing.
+    if screenConfiguredForOverlay {
+      var videoMixerSettings = await mixer.videoMixerSettings
+      videoMixerSettings.mode = .passthrough
+      await mixer.setVideoMixerSettings(videoMixerSettings)
+      if lastCaptureSize.width > 1 {
+        texture?.bounds = lastCaptureSize
+      }
+      screenConfiguredForOverlay = false
     }
   }
 

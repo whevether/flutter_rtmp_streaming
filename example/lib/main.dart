@@ -52,13 +52,22 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   CameraDescription? _cameraDesc;
   final TextEditingController _textFieldController =
       TextEditingController(text: "rtmp://192.168.2.81/live/live");
+  late final TextEditingController _multiUrl1Controller;
+  late final TextEditingController _multiUrl2Controller;
   StreamingProtocol _selectedProtocol = StreamingProtocol.rtmp;
+  StreamingProtocol _multiProtocol1 = StreamingProtocol.srt;
+  StreamingProtocol _multiProtocol2 = StreamingProtocol.srt;
+  bool _isMultiStreaming = false;
 
   List<StreamingProtocol> get _availableProtocols {
     return StreamingProtocol.values
         .where(isStreamingProtocolSupported)
         .toList(growable: false);
   }
+
+  /// iOS multi-stream demo: SRT only.
+  List<StreamingProtocol> get _multiProtocols =>
+      const [StreamingProtocol.srt];
 
   /// RootEncoder 2.7.0+：BT.709 与 RTMP ping/RTT 示例
   bool _forceBt709 = false;
@@ -81,6 +90,14 @@ class CameraExampleHomeState extends State<CameraExampleHome>
 
   @override
   void initState() {
+    _multiUrl1Controller = TextEditingController(
+      text:
+          'srt://192.168.2.81:10080?streamid=#!::r=live/livestream,m=publish',
+    );
+    _multiUrl2Controller = TextEditingController(
+      text:
+          'srt://192.168.2.81:10080?streamid=#!::r=live/livestream2,m=publish',
+    );
     onInit();
     WidgetsBinding.instance.addObserver(this);
     super.initState();
@@ -96,6 +113,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   //
   void onDispose() async {
     _streamStatsTimer?.cancel();
+    _textFieldController.dispose();
+    _multiUrl1Controller.dispose();
+    _multiUrl2Controller.dispose();
     await WakelockPlus.disable();
     await controller.dispose();
   }
@@ -290,6 +310,42 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                 }
               : null,
         ),
+        if (Platform.isIOS) ...[
+          ElevatedButton.icon(
+            icon: Icon(
+              !_isMultiStreaming ? Icons.hub : Icons.stop_circle,
+              color: Colors.white,
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: !_isMultiStreaming ? Colors.teal : Colors.red,
+            ),
+            label: Text(
+              !_isMultiStreaming
+                  ? 'Start Multi Streaming'
+                  : 'Stop Multi Streaming',
+              style: const TextStyle(color: Colors.white),
+            ),
+            onPressed: isControllerInitialized
+                ? () {
+                    if (!_isMultiStreaming) {
+                      startMultiVideoStreaming();
+                    } else {
+                      stopMultiVideoStreaming();
+                    }
+                  }
+                : null,
+          ),
+          if (_isMultiStreaming)
+            ElevatedButton.icon(
+              icon: const Icon(Icons.link_off, color: Colors.white),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+              label: const Text(
+                'Stop dest1 only',
+                style: TextStyle(color: Colors.white),
+              ),
+              onPressed: isControllerInitialized ? stopMultiDestination1 : null,
+            ),
+        ],
         // Only Android has implemented it
         if (Platform.isAndroid)
           ElevatedButton.icon(
@@ -448,7 +504,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                     try {
                       await controller.setOverlayText(
                         text: 'LIVE',
-                        fontSize: 12,
+                        fontSize: 36,
                         colorArgb: 0xFFFF0000,
                         position: OverlayPosition.topLeft,
                       );
@@ -470,43 +526,6 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                   },
             child: const Text('清除叠字'),
           ),
-          if (Platform.isIOS)
-            ElevatedButton(
-              onPressed: !isControllerInitialized
-                  ? null
-                  : () async {
-                      try {
-                        await controller.prepareScreenBroadcastConfig(
-                          url: _textFieldController.text,
-                          protocol: _selectedProtocol == StreamingProtocol.srt
-                              ? StreamingProtocol.srt
-                              : StreamingProtocol.rtmp,
-                        );
-                        showInSnackBar(
-                          '已写入 App Group。请从控制中心开始直播扩展。',
-                        );
-                      } on CameraException catch (e) {
-                        _showCameraException(e);
-                      }
-                    },
-              child: const Text('准备 iOS 录屏配置'),
-            ),
-          if (Platform.isAndroid)
-            ElevatedButton(
-              onPressed: !isControllerInitialized
-                  ? null
-                  : () async {
-                      try {
-                        await controller.startScreenStreaming(
-                          _textFieldController.text,
-                          protocol: _selectedProtocol,
-                        );
-                      } on CameraException catch (e) {
-                        _showCameraException(e);
-                      }
-                    },
-              child: const Text('Android 录屏推流'),
-            ),
           if (Platform.isIOS) ...[
           const SizedBox(height: 8),
           const Text('多任务相机 (HaishinKit 2.2.5+, iOS 17+)'),
@@ -748,6 +767,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
       }
       await controller.startVideoStreaming(myUrl, protocol: _selectedProtocol);
+      setState(() => _isMultiStreaming = false);
       showInSnackBar(
           'Streaming (${_selectedProtocol.name}) video to $myUrl');
       await WakelockPlus.enable();
@@ -755,6 +775,61 @@ class CameraExampleHomeState extends State<CameraExampleHome>
     } on CameraException catch (e) {
       _showCameraException(e);
       return;
+    }
+  }
+
+  /// Demo: push the same capture to two destinations (excludes WHIP/WHEP).
+  void startMultiVideoStreaming() async {
+    if (!isControllerInitialized) {
+      showInSnackBar('Error: select a camera first.');
+      return;
+    }
+    if (isStreaming) {
+      showInSnackBar('Error: already streaming — stop first.');
+      return;
+    }
+
+    final destinations = await _getMultiStreamDestinations();
+    if (destinations == null || destinations.length < 2) {
+      showInSnackBar('需要至少两个有效推流地址');
+      return;
+    }
+    try {
+      if (Platform.isAndroid) {
+        await controller.setForceBt709Color(_forceBt709);
+        await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
+      }
+      await controller.startMultiStreaming(destinations);
+      setState(() => _isMultiStreaming = true);
+      final summary = destinations
+          .map((d) => '${d.id ?? "?"}:${d.protocol.name}')
+          .join(', ');
+      showInSnackBar('Multi streaming → $summary');
+      await WakelockPlus.enable();
+      _startAndroidStreamStatsTimer();
+    } on CameraException catch (e) {
+      _showCameraException(e);
+    }
+  }
+
+  Future<void> stopMultiVideoStreaming() async {
+    try {
+      await controller.stopMultiStreaming();
+      setState(() => _isMultiStreaming = false);
+      _stopAndroidStreamStatsTimer();
+      await WakelockPlus.disable();
+      showInSnackBar('Multi streaming stopped');
+    } on CameraException catch (e) {
+      _showCameraException(e);
+    }
+  }
+
+  Future<void> stopMultiDestination1() async {
+    try {
+      await controller.stopStreamingDestination('dest1');
+      showInSnackBar('Stopped destination dest1 (dest2 may still be live)');
+    } on CameraException catch (e) {
+      _showCameraException(e);
     }
   }
 
@@ -836,6 +911,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
     }
     try {
       await controller.stopRecordingOrStreaming();
+      setState(() => _isMultiStreaming = false);
       _stopAndroidStreamStatsTimer();
       await WakelockPlus.disable();
     } on CameraException catch (e) {
@@ -916,7 +992,8 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     DropdownButtonFormField<StreamingProtocol>(
-                      value: selected,
+                      key: ValueKey(selected),
+                      initialValue: selected,
                       decoration: const InputDecoration(labelText: 'Protocol'),
                       items: _availableProtocols
                           .map((p) => DropdownMenuItem(
@@ -938,7 +1015,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                                   'rtsp://192.168.1.15:8554/live';
                             case StreamingProtocol.srt:
                               _textFieldController.text =
-                                  'srt://192.168.1.15:9000';
+                                  'srt://192.168.1.15:10080?streamid=#!::r=live/livestream,m=publish';
                             case StreamingProtocol.udp:
                               _textFieldController.text =
                                   'udp://192.168.1.15:5004';
@@ -996,11 +1073,158 @@ class CameraExampleHomeState extends State<CameraExampleHome>
 
     try {
       await controller.stopVideoStreaming();
+      setState(() => _isMultiStreaming = false);
       _stopAndroidStreamStatsTimer();
     } on CameraException catch (e) {
       _showCameraException(e);
       return;
     }
+  }
+
+  Future<List<StreamDestination>?> _getMultiStreamDestinations() async {
+    var protocol1 = _multiProtocol1;
+    var protocol2 = _multiProtocol2;
+    var url1 = _multiUrl1Controller.text;
+    var url2 = _multiUrl2Controller.text;
+
+    String sampleUrl(StreamingProtocol p, {required bool second}) {
+      switch (p) {
+        case StreamingProtocol.rtsp:
+          return second
+              ? 'rtsp://192.168.2.81:8554/live2'
+              : 'rtsp://192.168.2.81:8554/live';
+        case StreamingProtocol.srt:
+          return second
+              ? 'srt://192.168.2.81:10080?streamid=#!::r=live/livestream2,m=publish'
+              : 'srt://192.168.2.81:10080?streamid=#!::r=live/livestream,m=publish';
+        case StreamingProtocol.rtmp:
+          return second
+              ? 'rtmp://192.168.2.81/live/live2'
+              : 'rtmp://192.168.2.81/live/live';
+        case StreamingProtocol.udp:
+          return second
+              ? 'udp://192.168.2.81:5005'
+              : 'udp://192.168.2.81:5004';
+        case StreamingProtocol.whip:
+        case StreamingProtocol.whep:
+          return '';
+      }
+    }
+
+    return showDialog<List<StreamDestination>>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            Widget protocolField({
+              required String label,
+              required StreamingProtocol value,
+              required ValueChanged<StreamingProtocol> onChanged,
+            }) {
+              return DropdownButtonFormField<StreamingProtocol>(
+                key: ValueKey('$label-$value'),
+                initialValue: value,
+                decoration: InputDecoration(labelText: label),
+                items: _multiProtocols
+                    .map(
+                      (p) => DropdownMenuItem(
+                        value: p,
+                        child: Text(p.name.toUpperCase()),
+                      ),
+                    )
+                    .toList(),
+                onChanged: _multiProtocols.length <= 1
+                    ? null
+                    : (v) {
+                        if (v != null) onChanged(v);
+                      },
+              );
+            }
+
+            final hint = 'iOS 多路示例：两路均为 SRT';
+
+            return AlertDialog(
+              title: const Text('多路推流（双目标）'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(hint, style: const TextStyle(fontSize: 12)),
+                    const SizedBox(height: 12),
+                    protocolField(
+                      label: 'dest1 协议',
+                      value: protocol1,
+                      onChanged: (v) => setDialogState(() {
+                        protocol1 = v;
+                        _multiUrl1Controller.text =
+                            sampleUrl(v, second: false);
+                        url1 = _multiUrl1Controller.text;
+                      }),
+                    ),
+                    TextField(
+                      controller: _multiUrl1Controller,
+                      decoration: InputDecoration(
+                        labelText: 'dest1 URL',
+                        hintText: sampleUrl(protocol1, second: false),
+                      ),
+                      onChanged: (s) => url1 = s,
+                    ),
+                    const SizedBox(height: 12),
+                    protocolField(
+                      label: 'dest2 协议',
+                      value: protocol2,
+                      onChanged: (v) => setDialogState(() {
+                        protocol2 = v;
+                        _multiUrl2Controller.text =
+                            sampleUrl(v, second: true);
+                        url2 = _multiUrl2Controller.text;
+                      }),
+                    ),
+                    TextField(
+                      controller: _multiUrl2Controller,
+                      decoration: InputDecoration(
+                        labelText: 'dest2 URL',
+                        hintText: sampleUrl(protocol2, second: true),
+                      ),
+                      onChanged: (s) => url2 = s,
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: Text(
+                    MaterialLocalizations.of(context).cancelButtonLabel,
+                  ),
+                ),
+                TextButton(
+                  onPressed: () {
+                    _multiProtocol1 = protocol1;
+                    _multiProtocol2 = protocol2;
+                    Navigator.pop(context, <StreamDestination>[
+                      StreamDestination(
+                        url: url1.trim(),
+                        protocol: protocol1,
+                        id: 'dest1',
+                      ),
+                      StreamDestination(
+                        url: url2.trim(),
+                        protocol: protocol2,
+                        id: 'dest2',
+                      ),
+                    ]);
+                  },
+                  child: Text(
+                    MaterialLocalizations.of(context).okButtonLabel,
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   //

@@ -16,6 +16,9 @@ enum CameraLensDirection { front, back, external }
 /// Platform support:
 /// - Android: [rtmp], [rtsp], [srt], [udp], [whip]
 /// - iOS: [rtmp], [srt], [whip], [whep] ([whip]/[whep] via RTCHaishinKit, alpha)
+///
+/// SRT URL example:
+/// `srt://host:10080?streamid=#!::r=live/livestream,m=publish`
 enum StreamingProtocol { rtmp, rtsp, srt, udp, whip, whep }
 
 String serializeStreamingProtocol(StreamingProtocol protocol) {
@@ -720,12 +723,15 @@ class CameraController extends ValueNotifier<CameraValue> {
   }
 
   /// Draw text overlay on the stream (Android GL object filter / iOS ScreenObject).
+  ///
+  /// [fontSize] controls text bitmap size (Android applies display density).
+  /// [scale] is a percentage of natural size (`100` = 1:1 pixels, default).
   Future<void> setOverlayText({
     required String text,
     double fontSize = 22,
     int colorArgb = 0xFFFF0000,
     OverlayPosition position = OverlayPosition.center,
-    double scale = 50,
+    double scale = 100,
   }) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
@@ -747,10 +753,12 @@ class CameraController extends ValueNotifier<CameraValue> {
   }
 
   /// Draw an image overlay from [filePath] on the stream.
+  ///
+  /// [scale] is a percentage of natural image size (`100` = 1:1 pixels).
   Future<void> setOverlayImage({
     required String filePath,
     OverlayPosition position = OverlayPosition.bottomRight,
-    double scale = 50,
+    double scale = 100,
   }) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
@@ -1155,14 +1163,19 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Start streaming to multiple destinations at once (excludes WHIP/WHEP).
+  /// Start streaming to multiple destinations at once (iOS only; excludes WHIP/WHEP).
   ///
-  /// Android uses RootEncoder MultiStream (experimental). iOS attaches multiple
-  /// mixer outputs. Keeps [startVideoStreaming] single-destination behavior.
+  /// Attaches multiple mixer outputs on iOS. Android is not supported.
   Future<void> startMultiStreaming(
     List<StreamDestination> destinations, {
     int bitrate = 1200 * 1024,
   }) async {
+    if (!Platform.isIOS) {
+      throw CameraException(
+        'unsupportedPlatform',
+        'startMultiStreaming is only supported on iOS.',
+      );
+    }
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -1199,8 +1212,14 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Stop one destination previously started via [startMultiStreaming].
+  /// Stop one destination previously started via [startMultiStreaming] (iOS only).
   Future<void> stopStreamingDestination(String id) async {
+    if (!Platform.isIOS) {
+      throw CameraException(
+        'unsupportedPlatform',
+        'stopStreamingDestination is only supported on iOS.',
+      );
+    }
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -1217,101 +1236,15 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Stop all destinations started via [startMultiStreaming].
+  /// Stop all destinations started via [startMultiStreaming] (iOS only).
   Future<void> stopMultiStreaming() async {
-    await stopVideoStreaming();
-  }
-
-  /// Android: start screen capture streaming (MediaProjection).
-  ///
-  /// iOS: writes broadcast config for the ReplayKit Upload Extension via App
-  /// Group when using [prepareScreenBroadcastConfig]; calling this method on
-  /// iOS throws — use control center + Extension to go live.
-  Future<void> startScreenStreaming(
-    String url, {
-    StreamingProtocol protocol = StreamingProtocol.rtmp,
-    int bitrate = 1200 * 1024,
-  }) async {
-    if (!value.isInitialized! || _isDisposed) {
-      throw CameraException(
-        'Uninitialized CameraController',
-        'startScreenStreaming was called on uninitialized CameraController',
-      );
-    }
-    _ensureMultiProtocolSupported(protocol);
-    if (Platform.isIOS) {
-      throw CameraException(
-        'unsupportedPlatform',
-        'iOS screen streaming runs in a Broadcast Upload Extension. '
-        'Call prepareScreenBroadcastConfig, then start Live Broadcast from Control Center.',
-      );
-    }
-    try {
-      await _channel.invokeMethod<void>('startScreenStreaming', <String, dynamic>{
-        'url': url,
-        'protocol': serializeStreamingProtocol(protocol),
-        'bitrate': bitrate,
-      });
-      value = value.copyWith(
-        isStreamingVideoRtmp: true,
-        streamingProtocol: protocol,
-        isStreamingPaused: false,
-      );
-    } on PlatformException catch (e) {
-      throw CameraException(e.code, e.message);
-    }
-  }
-
-  /// Stop Android screen streaming started with [startScreenStreaming].
-  Future<void> stopScreenStreaming() async {
-    if (Platform.isIOS) {
-      throw CameraException(
-        'unsupportedPlatform',
-        'Stop iOS screen streaming from the system broadcast UI.',
-      );
-    }
-    if (!value.isInitialized! || _isDisposed) {
-      throw CameraException(
-        'Uninitialized CameraController',
-        'stopScreenStreaming was called on uninitialized CameraController',
-      );
-    }
-    try {
-      await _channel.invokeMethod<void>('stopScreenStreaming');
-      value = value.copyWith(
-        isStreamingVideoRtmp: false,
-        clearStreamingProtocol: true,
-      );
-    } on PlatformException catch (e) {
-      throw CameraException(e.code, e.message);
-    }
-  }
-
-  /// Persist RTMP/SRT URL for the iOS ReplayKit Broadcast Extension (App Group).
-  Future<void> prepareScreenBroadcastConfig({
-    required String url,
-    StreamingProtocol protocol = StreamingProtocol.rtmp,
-    String appGroupId = 'group.com.rtmp_streaming.broadcast',
-  }) async {
     if (!Platform.isIOS) {
       throw CameraException(
         'unsupportedPlatform',
-        'prepareScreenBroadcastConfig is only for iOS Broadcast Extension setup.',
+        'stopMultiStreaming is only supported on iOS.',
       );
     }
-    _ensureMultiProtocolSupported(protocol);
-    try {
-      await _channel.invokeMethod<void>(
-        'prepareScreenBroadcastConfig',
-        <String, dynamic>{
-          'url': url,
-          'protocol': serializeStreamingProtocol(protocol),
-          'appGroupId': appGroupId,
-        },
-      );
-    } on PlatformException catch (e) {
-      throw CameraException(e.code, e.message);
-    }
+    await stopVideoStreaming();
   }
 
   /// Stop streaming.

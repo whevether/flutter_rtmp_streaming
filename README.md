@@ -9,7 +9,7 @@
 |----------|---------|-----|-------------|
 | RTMP | ✅ | ✅ | `rtmp://host/live/stream` |
 | RTSP | ✅ | ❌ | `rtsp://host:8554/live` |
-| SRT | ✅ | ✅ | `srt://host:9000` |
+| SRT | ✅ | ✅ | `srt://host:10080?streamid=#!::r=live/livestream,m=publish` |
 | UDP | ✅ | ❌ | `udp://host:5004` |
 | WHIP | ✅ | ✅ (alpha) | `https://host/whip` |
 | WHEP | ❌ | ✅ (alpha) | `https://host/whep` |
@@ -59,6 +59,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 - 📊 Stream statistics: `getStreamStatistics`  
 - 🗑️ Dispose plugin: `dispose`  
 - 📸 Snapshot while streaming: `takePicture`  
+- 🖼️ Overlay text/image: `setOverlayText` / `setOverlayImage` / `clearOverlay`  
 
 ---
 
@@ -72,6 +73,7 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - ⚙️ Session preset: `setSessionPreset`  
 - 🖼️ Screen dimensions: `setScreenSettings`  
 - 🎞️ `setVideoSettings` extras: `expectedFrameRate`, `bitRateMode` (2.2.1+ / 2.2.2+), `profileLevel`  
+- 📡 Multi-streaming: `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (no WHIP/WHEP)  
 
 ---
 
@@ -80,9 +82,6 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - ▶️ Resume recording: `resumeVideoRecording`  
 - 🎨 Apply filter: `setFilter` — see [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt) for `type` values  
 - ❌ Remove filter: `removeFilter`  
-- 🖼️ Overlay text/image: `setOverlayText` / `setOverlayImage` / `clearOverlay` (iOS + Android)  
-- 📡 Multi-streaming: `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (no WHIP/WHEP; Android MultiStream experimental)  
-- 🖥️ Screen streaming: `startScreenStreaming` / `stopScreenStreaming` (Android); iOS via Broadcast Extension + `prepareScreenBroadcastConfig`  
 - 🎙️ Pitch shift: `setPitchShift` (RootEncoder `PitchShiftEffect`; `1.0` disables)  
 - 🔒 Exposure lock: `lockExposure` / `unlockExposure` / `isExposureLocked` (after preview or streaming starts)  
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
@@ -130,7 +129,7 @@ await controller.startVideoStreaming(
 
 // SRT (both platforms)
 // await controller.startVideoStreaming(
-//   'srt://your-server:9000',
+//   'srt://your-server:10080?streamid=#!::r=live/livestream,m=publish',
 //   protocol: StreamingProtocol.srt,
 // );
 
@@ -264,7 +263,7 @@ await controller.setPitchShift(1.8);
 ---
 
 ### Overlay: `setOverlayText` / `setOverlayImage` / `clearOverlay`
-Works on Android and iOS.
+Works on Android and iOS. `fontSize` drives glyph size; `scale` is a % of natural size (`100` = 1:1).
 ```dart
 await controller.setOverlayText(
   text: 'LIVE',
@@ -282,28 +281,22 @@ await controller.clearOverlay();
 ---
 
 ### Multi-streaming: `startMultiStreaming`
-WHIP/WHEP are not allowed. Android uses experimental RootEncoder `MultiStream`.
+**iOS only.** WHIP/WHEP are not allowed. Example app defaults to two SRT endpoints (`dest1` / `dest2`); use **Stop dest1 only** to drop one path.
 ```dart
 await controller.startMultiStreaming([
-  StreamDestination(url: 'rtmp://a/live/1', protocol: StreamingProtocol.rtmp, id: 'a'),
-  StreamDestination(url: 'srt://b:9000', protocol: StreamingProtocol.srt, id: 'b'),
+  StreamDestination(
+    url: 'srt://a:10080?streamid=#!::r=live/livestream,m=publish',
+    protocol: StreamingProtocol.srt,
+    id: 'a',
+  ),
+  StreamDestination(
+    url: 'srt://a:10080?streamid=#!::r=live/livestream2,m=publish',
+    protocol: StreamingProtocol.srt,
+    id: 'b',
+  ),
 ]);
 await controller.stopStreamingDestination('a');
 await controller.stopMultiStreaming();
-```
-
----
-
-### Screen streaming
-**Android**
-```dart
-await controller.startScreenStreaming(url, protocol: StreamingProtocol.rtmp);
-await controller.stopScreenStreaming();
-```
-**iOS**: use Broadcast Upload Extension — see [example/ios/BroadcastUploadExtension/README.md](example/ios/BroadcastUploadExtension/README.md).
-```dart
-await controller.prepareScreenBroadcastConfig(url: url);
-// Then start Live Broadcast from Control Center.
 ```
 
 ---
