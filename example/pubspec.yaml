@@ -30,8 +30,8 @@ dependencies:
   cupertino_icons: ^1.0.9
 
   permission_handler: any
-  wakelock_plus: ^1.6.1
-  path_provider: ^2.1.5
+  wakelock_plus: ^1.7.0
+  path_provider: ^2.1.6
 dev_dependencies:
   flutter_test:
     sdk: flutter
