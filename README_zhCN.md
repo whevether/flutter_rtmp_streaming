@@ -1,14 +1,26 @@
 # rtmp_streaming
 
 ## 📖 概述
-`rtmp_streaming` 是一个 Flutter 插件，旨在为 **Android** 和 **iOS** 提供统一的 RTMP 推流与视频录制能力。  
-它解决了 pub.dev 上缺乏合适 Flutter RTMP 插件的问题：现有插件要么长期无人维护，要么依赖包过时，无法满足现代移动应用的需求。
+`rtmp_streaming` 是一个 Flutter 插件，为 **Android** 和 **iOS** 提供统一的推流与视频录制能力。  
+它解决了 pub.dev 上缺乏合适 Flutter 推流插件的问题：现有插件要么长期无人维护，要么依赖包过时，无法满足现代移动应用的需求。
+
+### 协议支持
+
+| 协议 | Android | iOS | URL 示例 |
+|------|---------|-----|----------|
+| RTMP | ✅ | ✅ | `rtmp://host/live/stream` |
+| RTSP | ✅ | ❌ | `rtsp://host:8554/live` |
+| SRT | ✅ | ✅ | `srt://host:9000` |
+| UDP | ✅ | ❌ | `udp://host:5004` |
+| WHIP | ✅ | ❌ | `https://host/whip` |
+
+通过 `StreamingProtocol` 显式指定协议（默认 `rtmp`）。
 
 ---
 
 ## ⚙️ 技术基础
-- **Android**：基于 [`com.github.pedroSG94.RootEncoder:library:2.7.5`](https://github.com/pedroSG94/RootEncoder)  
-- **iOS**：基于 [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)  
+- **Android**：基于 [`com.github.pedroSG94.RootEncoder:library:2.8.0`](https://github.com/pedroSG94/RootEncoder)  
+- **iOS**：基于 [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)（含 `SRTHaishinKit`）  
 
 通过这两个成熟的底层库，`rtmp_streaming` 提供了跨平台一致的 API 接口，简化了开发者的使用成本。
 
@@ -20,7 +32,7 @@
   - 长期无人维护。  
   - 依赖包过时，无法兼容最新的 Flutter 与平台 SDK。  
 
-因此，`rtmp_streaming` 的目标是提供一个 **现代、稳定、可维护** 的 RTMP 推流解决方案。
+因此，`rtmp_streaming` 的目标是提供一个 **现代、稳定、可维护** 的推流解决方案。
 
 ---
 
@@ -34,7 +46,7 @@
 - ⏹️ 停止本地视频录制：`stopRecording`  
 - 📡 开始录制并推送直播流：`startVideoRecordingAndStreaming`  
 - ⏹️ 停止录制或推送直播流：`stopRecordingOrStreaming`  
-- 📡 开始推送直播流：`startVideoStreaming`  
+- 📡 开始推送直播流：`startVideoStreaming`（参数：`url`、`protocol`、`bitrate`；Android WHIP 可选 `whipToken`）  
 - ⏹️ 停止推送直播流：`stopStreaming`  
 - 🔄 切换摄像头：`switchCamera`  
 - 🔊 切换麦克风采集开/关：`switchAudio`  
@@ -67,10 +79,10 @@
 - ⏸️ 暂停录制：`pauseVideoRecording`  
 - ▶️ 恢复录制：`resumeVideoRecording`  
 - 🎨 设置滤镜：`setFilter`  
-  > 滤镜 `type` 值请查看源码 [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaminging/CameraNativeView.kt)  
+  > 滤镜 `type` 值请查看源码 [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt)  
 - ❌ 移除滤镜：`removeFilter`  
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
-- 📶 RTMP Ping / RTT：`setRtmpShouldSendPings`（RootEncoder 2.7.0+）  
+- 📶 RTMP Ping / RTT：`setRtmpShouldSendPings`（RootEncoder 2.7.0+，仅 RTMP）  
 
 ---
 
@@ -110,7 +122,22 @@ if (Platform.isIOS) {
   );
 }
 
-await controller.startVideoStreaming('rtmp://your-server/live/stream-key');
+await controller.startVideoStreaming(
+  'rtmp://your-server/live/stream-key',
+  protocol: StreamingProtocol.rtmp,
+);
+
+// SRT 示例（双端）
+// await controller.startVideoStreaming(
+//   'srt://your-server:9000',
+//   protocol: StreamingProtocol.srt,
+// );
+
+// Android RTSP / UDP / WHIP
+// await controller.startVideoStreaming(
+//   'rtsp://your-server:8554/live',
+//   protocol: StreamingProtocol.rtsp,
+// );
 ```
 
 ---

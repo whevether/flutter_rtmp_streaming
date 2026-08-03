@@ -1,7 +1,6 @@
 // Copyright 2018 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-//若需要继续扩展，建议优先级：推流中动态码率（Android 已有 BitrateAdapter）、iOS 录制暂停、SRT 协议（双库均支持）
 import 'dart:async';
 import 'dart:io';
 
@@ -11,6 +10,37 @@ import 'package:flutter/widgets.dart';
 final MethodChannel _channel = const MethodChannel('com.rtmp_streaming');
 
 enum CameraLensDirection { front, back, external }
+
+/// Streaming protocol for [CameraController.startVideoStreaming].
+///
+/// Platform support:
+/// - Android: [rtmp], [rtsp], [srt], [udp], [whip]
+/// - iOS: [rtmp], [srt] only
+enum StreamingProtocol { rtmp, rtsp, srt, udp, whip }
+
+String serializeStreamingProtocol(StreamingProtocol protocol) {
+  switch (protocol) {
+    case StreamingProtocol.rtmp:
+      return 'rtmp';
+    case StreamingProtocol.rtsp:
+      return 'rtsp';
+    case StreamingProtocol.srt:
+      return 'srt';
+    case StreamingProtocol.udp:
+      return 'udp';
+    case StreamingProtocol.whip:
+      return 'whip';
+  }
+}
+
+bool isStreamingProtocolSupported(StreamingProtocol protocol) {
+  if (Platform.isAndroid) return true;
+  if (Platform.isIOS) {
+    return protocol == StreamingProtocol.rtmp ||
+        protocol == StreamingProtocol.srt;
+  }
+  return false;
+}
 
 /// Affect the quality of video recording and image capture.
 ///
@@ -216,6 +246,7 @@ class CameraValue {
     this.isRecordingVideo,
     this.isTakingPicture,
     this.isStreamingVideoRtmp,
+    this.streamingProtocol,
     this.event,
     bool? isRecordingPaused,
     bool? isStreamingPaused,
@@ -228,6 +259,7 @@ class CameraValue {
           isRecordingVideo: false,
           isTakingPicture: false,
           isStreamingVideoRtmp: false,
+          streamingProtocol: null,
           isRecordingPaused: false,
           isStreamingPaused: false,
           previewQuarterTurns: 0,
@@ -243,8 +275,13 @@ class CameraValue {
   /// True when the camera is recording (not the same as previewing).
   final bool? isRecordingVideo;
 
-  /// True when the camera is recording (not the same as previewing).
+  /// True when the camera is streaming (any [StreamingProtocol]).
+  ///
+  /// Kept as [isStreamingVideoRtmp] for API compatibility.
   final bool? isStreamingVideoRtmp;
+
+  /// Current streaming protocol while [isStreamingVideoRtmp] is true.
+  final StreamingProtocol? streamingProtocol;
   final bool? _isRecordingPaused;
   final bool? _isStreamingPaused;
 
@@ -278,6 +315,8 @@ class CameraValue {
     bool? isInitialized,
     bool? isRecordingVideo,
     bool? isStreamingVideoRtmp,
+    StreamingProtocol? streamingProtocol,
+    bool clearStreamingProtocol = false,
     bool? isTakingPicture,
     String? errorDescription,
     Size? previewSize,
@@ -293,6 +332,9 @@ class CameraValue {
       previewQuarterTurns: previewQuarterTurns ?? this.previewQuarterTurns,
       isRecordingVideo: isRecordingVideo ?? this.isRecordingVideo,
       isStreamingVideoRtmp: isStreamingVideoRtmp ?? this.isStreamingVideoRtmp,
+      streamingProtocol: clearStreamingProtocol
+          ? null
+          : (streamingProtocol ?? this.streamingProtocol),
       isTakingPicture: isTakingPicture ?? this.isTakingPicture,
       isRecordingPaused: isRecordingPaused ?? _isRecordingPaused,
       isStreamingPaused: isStreamingPaused ?? _isStreamingPaused,
@@ -311,7 +353,8 @@ class CameraValue {
         'errorDescription: $errorDescription, '
         'previewSize: $previewSize, '
         'previewQuarterTurns: $previewQuarterTurns, '
-        'isStreamingVideoRtmp: $isStreamingVideoRtmp)';
+        'isStreamingVideoRtmp: $isStreamingVideoRtmp, '
+        'streamingProtocol: $streamingProtocol)';
   }
 }
 
@@ -424,6 +467,7 @@ class CameraController extends ValueNotifier<CameraValue> {
             errorDescription: errorDescription,
             isRecordingVideo: false,
             isStreamingVideoRtmp: false,
+            clearStreamingProtocol: true,
             event: uniEvent);
         break;
       case 'rtmp_retry':
@@ -434,6 +478,7 @@ class CameraController extends ValueNotifier<CameraValue> {
         value = value.copyWith(
             errorDescription: errorDescription,
             isStreamingVideoRtmp: false,
+            clearStreamingProtocol: true,
             event: uniEvent);
         break;
       case 'success':
@@ -685,8 +730,10 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value =
-          value.copyWith(isRecordingVideo: false, isStreamingVideoRtmp: false);
+      value = value.copyWith(
+          isRecordingVideo: false,
+          isStreamingVideoRtmp: false,
+          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopRecording',
         <String, dynamic>{},
@@ -774,13 +821,15 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Start a video streaming to the url in [url`].
+  /// Start recording to [filePath] and streaming to [url] with [protocol].
   ///
-  /// This uses rtmp to do the sending the remote side.
-  ///
-  /// Throws a [CameraException] if the capture fails.
+  /// Throws a [CameraException] if the capture fails or the protocol is
+  /// unsupported on this platform.
   Future<void> startVideoRecordingAndStreaming(String filePath, String url,
-      {int bitrate = 1200 * 1024, bool? androidUseOpenGL}) async {
+      {StreamingProtocol protocol = StreamingProtocol.rtmp,
+      int bitrate = 1200 * 1024,
+      bool? androidUseOpenGL,
+      String? whipToken}) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -800,6 +849,7 @@ class CameraController extends ValueNotifier<CameraValue> {
         'startVideoStreaming was called when a recording is already started.',
       );
     }
+    _ensureProtocolSupported(protocol);
 
     try {
       await _channel.invokeMethod<void>(
@@ -807,9 +857,12 @@ class CameraController extends ValueNotifier<CameraValue> {
         'url': url,
         'filePath': filePath,
         'bitrate': bitrate,
+        'protocol': serializeStreamingProtocol(protocol),
+        if (whipToken != null) 'whipToken': whipToken,
       });
       value = value.copyWith(
           isStreamingVideoRtmp: true,
+          streamingProtocol: protocol,
           isStreamingPaused: false,
           isRecordingVideo: true,
           isRecordingPaused: false);
@@ -818,13 +871,18 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Start a video streaming to the url in [url`].
+  /// Start streaming to [url] using [protocol].
   ///
-  /// This uses rtmp to do the sending the remote side.
+  /// Defaults to [StreamingProtocol.rtmp]. iOS only supports [StreamingProtocol.rtmp]
+  /// and [StreamingProtocol.srt].
   ///
-  /// Throws a [CameraException] if the capture fails.
+  /// Throws a [CameraException] if the capture fails or the protocol is
+  /// unsupported on this platform.
   Future<void> startVideoStreaming(String url,
-      {int bitrate = 1200 * 1024, bool? androidUseOpenGL}) async {
+      {StreamingProtocol protocol = StreamingProtocol.rtmp,
+      int bitrate = 1200 * 1024,
+      bool? androidUseOpenGL,
+      String? whipToken}) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -843,17 +901,31 @@ class CameraController extends ValueNotifier<CameraValue> {
         'startVideoStreaming was called when a recording is already started.',
       );
     }
+    _ensureProtocolSupported(protocol);
 
     try {
       await _channel
           .invokeMethod<void>('startVideoStreaming', <String, dynamic>{
         'url': url,
         'bitrate': bitrate,
+        'protocol': serializeStreamingProtocol(protocol),
+        if (whipToken != null) 'whipToken': whipToken,
       });
-      value =
-          value.copyWith(isStreamingVideoRtmp: true, isStreamingPaused: false);
+      value = value.copyWith(
+          isStreamingVideoRtmp: true,
+          streamingProtocol: protocol,
+          isStreamingPaused: false);
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
+    }
+  }
+
+  void _ensureProtocolSupported(StreamingProtocol protocol) {
+    if (!isStreamingProtocolSupported(protocol)) {
+      throw CameraException(
+        'unsupportedProtocol',
+        'StreamingProtocol.${protocol.name} is not supported on this platform.',
+      );
     }
   }
 
@@ -872,8 +944,10 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value =
-          value.copyWith(isStreamingVideoRtmp: false, isRecordingVideo: false);
+      value = value.copyWith(
+          isStreamingVideoRtmp: false,
+          isRecordingVideo: false,
+          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopStreaming',
         <String, dynamic>{},
@@ -898,8 +972,10 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value =
-          value.copyWith(isStreamingVideoRtmp: false, isRecordingVideo: false);
+      value = value.copyWith(
+          isStreamingVideoRtmp: false,
+          isRecordingVideo: false,
+          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopRecordingOrStreaming',
         <String, dynamic>{},

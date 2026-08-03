@@ -100,6 +100,8 @@ class MethodCallHandlerImplNew(
                 getCameraView()?.startVideoStreaming(
                     call.argument("url"),
                     call.argument("bitrate"),
+                    call.argument("protocol"),
+                    call.argument("whipToken"),
                     result
                 )
             }
@@ -110,6 +112,8 @@ class MethodCallHandlerImplNew(
                     call.argument("filePath"),
                     call.argument("url"),
                     call.argument("bitrate"),
+                    call.argument("protocol"),
+                    call.argument("whipToken"),
                     result
                 )
             }

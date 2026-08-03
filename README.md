@@ -1,14 +1,25 @@
 # rtmp_streaming
 
 ## 📖 Overview
-`rtmp_streaming` is a Flutter plugin designed to provide unified RTMP streaming and video recording capabilities for **Android** and **iOS**.  
-It addresses the lack of suitable Flutter RTMP plugins on pub.dev: existing plugins are either no longer maintained or rely on outdated dependencies, making them unsuitable for modern mobile applications.
+`rtmp_streaming` is a Flutter plugin that provides unified streaming and video recording for **Android** and **iOS**.
+
+### Protocol support
+
+| Protocol | Android | iOS | Example URL |
+|----------|---------|-----|-------------|
+| RTMP | ✅ | ✅ | `rtmp://host/live/stream` |
+| RTSP | ✅ | ❌ | `rtsp://host:8554/live` |
+| SRT | ✅ | ✅ | `srt://host:9000` |
+| UDP | ✅ | ❌ | `udp://host:5004` |
+| WHIP | ✅ | ❌ | `https://host/whip` |
+
+Pass an explicit `StreamingProtocol` (default `rtmp`).
 
 ---
 
 ## ⚙️ Technical Foundation
-- **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.7.5`](https://github.com/pedroSG94/RootEncoder)  
-- **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)  
+- **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.8.0`](https://github.com/pedroSG94/RootEncoder)  
+- **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift) (includes `SRTHaishinKit`)  
 
 By leveraging these mature libraries, `rtmp_streaming` provides a consistent cross-platform API interface, reducing development complexity.
 
@@ -34,7 +45,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 - ⏹️ Stop local video recording: `stopRecording`  
 - 📡 Start recording and streaming: `startVideoRecordingAndStreaming`  
 - ⏹️ Stop recording or streaming: `stopRecordingOrStreaming`  
-- 📡 Start video streaming: `startVideoStreaming`  
+- 📡 Start video streaming: `startVideoStreaming` (`url`, `protocol`, `bitrate`; Android WHIP optional `whipToken`)  
 - ⏹️ Stop video streaming: `stopStreaming`  
 - 🔄 Switch camera: `switchCamera`  
 - 🔊 Toggle mic capture on/off: `switchAudio`  
@@ -69,7 +80,7 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - 🎨 Apply filter: `setFilter` — see [CameraNativeView.kt](android/src/main/kotlin/com/app/rtmp_streaming/CameraNativeView.kt) for `type` values  
 - ❌ Remove filter: `removeFilter`  
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
-- 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+)  
+- 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+, RTMP only)  
 
 ---
 
@@ -106,7 +117,16 @@ if (Platform.isIOS) {
   );
 }
 
-await controller.startVideoStreaming('rtmp://your-server/live/stream-key');
+await controller.startVideoStreaming(
+  'rtmp://your-server/live/stream-key',
+  protocol: StreamingProtocol.rtmp,
+);
+
+// SRT (both platforms)
+// await controller.startVideoStreaming(
+//   'srt://your-server:9000',
+//   protocol: StreamingProtocol.srt,
+// );
 ```
 
 ---

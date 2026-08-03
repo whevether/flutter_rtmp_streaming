@@ -17,8 +17,10 @@ This plugin provides easy-to-use API for RTMP streaming functionality in Flutter
   s.source           = { :path => '.' }
   s.source_files     = 'rtmp_streaming/Sources/**/*'
   s.dependency 'Flutter'
+  # CocoaPods 最高：HaishinKit 2.0.9、SRTHaishinKit 2.0.8；之后版本仅支持 SPM（Package.swift 用 2.2.5）
   s.dependency 'HaishinKit', '2.0.9'
-  
+  s.dependency 'SRTHaishinKit', '2.0.8'
+
   s.platform = :ios, '15.0'
 
   # Flutter.framework does not contain a i386 slice.

@@ -19,7 +19,8 @@ let package = Package(
             name: "rtmp_streaming",
             dependencies: [
                 .product(name: "HaishinKit", package: "HaishinKit.swift"),
-                .product(name: "RTMPHaishinKit", package: "HaishinKit.swift")
+                .product(name: "RTMPHaishinKit", package: "HaishinKit.swift"),
+                .product(name: "SRTHaishinKit", package: "HaishinKit.swift")
             ],
             resources: [
             ]

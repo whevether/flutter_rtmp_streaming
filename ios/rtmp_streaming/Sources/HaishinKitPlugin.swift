@@ -6,6 +6,7 @@ import FlutterMacOS
 #endif
 import HaishinKit
 import RTMPHaishinKit
+import SRTHaishinKit
 import AVFoundation
 
 public final class HaishinKitPlugin: NSObject,FlutterPlugin {
@@ -45,6 +46,10 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private var rtmpConnection: RTMPConnection?
   // rtmpStream直播 流
   private var rtmpStream: RTMPStream?
+  // SRT
+  private var srtConnection: SRTConnection?
+  private var srtStream: SRTStream?
+  private var currentProtocol: String = "rtmp"
   // 录制流
   private var recorderStream: StreamRecorder?
   //重试次数
@@ -56,6 +61,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   //销毁所有
   private func dispose()async{
     subscription = nil
+    await tearDownSrtSession()
     rtmpConnection = nil
     if let newRtmpStream = rtmpStream {
       mixer?.removeOutput(newRtmpStream)
@@ -80,13 +86,27 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private func stopStreaming()async->FlutterError?{
     do{
       subscription = nil
-      try? await rtmpConnection?.close()
-      _  = try? await rtmpStream?.close()
+      if currentProtocol == "srt" {
+        await tearDownSrtSession()
+      } else {
+        try? await rtmpConnection?.close()
+        _  = try? await rtmpStream?.close()
+      }
       return nil
     }catch{
       return FlutterError(code: "closeConnect Error", message: "catch error", details: nil)
     }
     
+  }
+
+  private func tearDownSrtSession() async {
+    if let stream = srtStream {
+      mixer?.removeOutput(stream)
+      _ = try? await stream.close()
+    }
+    try? await srtConnection?.close()
+    srtStream = nil
+    srtConnection = nil
   }
   //publish
   private func publish(name: String) async{
@@ -185,28 +205,56 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     }
   }
   
-  // 连接 rtmp
-  private func startVideoStreaming(url: String,frameRate: NSNumber, isPlay: Bool?) async -> FlutterError?{
+  // 连接推流（RTMP / SRT）
+  private func startVideoStreaming(
+    url: String,
+    frameRate: NSNumber,
+    protocolName: String,
+    isPlay: Bool?
+  ) async -> FlutterError? {
+    let protocolLower = protocolName.lowercased()
+    switch protocolLower {
+    case "rtsp", "udp", "whip":
+      return FlutterError(
+        code: "unsupportedProtocol",
+        message: "StreamingProtocol.\(protocolLower) is not supported on iOS.",
+        details: nil
+      )
+    case "srt":
+      return await startSrtStreaming(url: url, frameRate: frameRate)
+    case "rtmp":
+      return await startRtmpStreaming(url: url, frameRate: frameRate, isPlay: isPlay)
+    default:
+      return FlutterError(
+        code: "unsupportedProtocol",
+        message: "Unknown protocol: \(protocolName)",
+        details: nil
+      )
+    }
+  }
+
+  private func startRtmpStreaming(url: String, frameRate: NSNumber, isPlay: Bool?) async -> FlutterError? {
     do {
-      guard let newRtmpConnection = rtmpConnection else { return FlutterError(code: "startVideoStreamingError", message: "connect error", details: nil)}
-      //订阅连接状态事件
+      currentProtocol = "rtmp"
+      await tearDownSrtSession()
+      guard let newRtmpConnection = rtmpConnection else {
+        return FlutterError(code: "startVideoStreamingError", message: "connect error", details: nil)
+      }
       let uri = URL(string: url)
       let name = uri?.pathComponents.last
       var bits = url.components(separatedBy: "/")
       bits.removeLast()
       let newUrl = bits.joined(separator: "/")
-      guard
-        let newName = name as? String else {
+      guard let newName = name else {
         return FlutterError(code: "startVideoStreamingError", message: "publish name error", details: nil)
       }
+      retries = 0
       subscription = Task { [weak self] in
         guard let self else { return }
         for await status in await newRtmpConnection.status {
           print("connect status: \(status.code)")
           switch status.code {
           case RTMPConnection.Code.connectSuccess.rawValue:
-            // 在主线程执行 UI 更新
-            //            await MainActor.run {
             if let isPlay {
               Task { await self.play(url: newName) }
             } else {
@@ -214,24 +262,17 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
             }
             self.eventSink?(["eventType": "success",
                              "errorDescription": "connection success"])
-            //            }
-            
           case RTMPConnection.Code.connectFailed.rawValue:
             guard retries <= 3 else {
-              //              await MainActor.run {
               self.eventSink?(["eventType": "error",
                                "errorDescription": "connection failed " + status.code])
-              //              }
               return
             }
             retries += 1
-            // 异步延迟，避免阻塞主线程
             try await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(retries)) * 1_000_000_000))
             try await newRtmpConnection.connect(newUrl)
-            //            await MainActor.run {
             self.eventSink?(["eventType": "rtmp_retry",
                              "errorDescription": "connection failed " + status.code])
-            //            }
           case RTMPConnection.Code.connectClosed.rawValue:
             self.eventSink?(["eventType": "camera_closing",
                              "errorDescription": "connection error " + status.code])
@@ -254,10 +295,64 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       
       try await newRtmpConnection.connect(newUrl)
       return nil
-    }catch {
+    } catch {
       eventSink?(["eventType" : "rtmp_stopped",
                   "errorDescription" : "rtmp disconnected"])
       return FlutterError(code: "startVideoStreamingError", message: "catch error", details: nil)
+    }
+  }
+
+  private func startSrtStreaming(url: String, frameRate: NSNumber) async -> FlutterError? {
+    do {
+      currentProtocol = "srt"
+      await tearDownSrtSession()
+      try? await rtmpConnection?.close()
+
+      guard url.lowercased().hasPrefix("srt") else {
+        return FlutterError(
+          code: "startVideoStreamingError",
+          message: "URL must start with srt://",
+          details: nil
+        )
+      }
+      guard let srtUrl = URL(string: url) else {
+        return FlutterError(
+          code: "startVideoStreamingError",
+          message: "Invalid SRT URL",
+          details: nil
+        )
+      }
+
+      let connection = SRTConnection()
+      let stream = SRTStream(connection: connection)
+      srtConnection = connection
+      srtStream = stream
+      mixer?.addOutput(stream, startRunning: false)
+
+      await setVideoSettings(
+        bitrate: frameRate,
+        width: nil,
+        height: nil,
+        frameInterval: nil,
+        profileLevel: nil,
+        expectedFrameRate: nil,
+        bitRateMode: nil
+      )
+
+      try await connection.connect(srtUrl)
+      await stream.publish()
+      eventSink?(["eventType": "success",
+                   "errorDescription": "connection success"])
+      return nil
+    } catch {
+      eventSink?(["eventType": "rtmp_stopped",
+                  "errorDescription": "srt disconnected"])
+      await tearDownSrtSession()
+      return FlutterError(
+        code: "startVideoStreamingError",
+        message: error.localizedDescription,
+        details: nil
+      )
     }
   }
   //录制本地视频
@@ -283,18 +378,28 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     }
   }
   //直播与录制到本地
-  private func startVideoRecordingAndStreaming(filePath : String,url:String,frameRate: NSNumber)async ->FlutterError?{
-    do{
-      let startVideoStreamingRes = await startVideoStreaming(url: url,frameRate: frameRate, isPlay: nil)
-      if(startVideoStreamingRes != nil){
+  private func startVideoRecordingAndStreaming(
+    filePath: String,
+    url: String,
+    frameRate: NSNumber,
+    protocolName: String
+  ) async -> FlutterError? {
+    do {
+      let startVideoStreamingRes = await startVideoStreaming(
+        url: url,
+        frameRate: frameRate,
+        protocolName: protocolName,
+        isPlay: nil
+      )
+      if startVideoStreamingRes != nil {
         return startVideoStreamingRes
       }
       let startVideoRecordingRes = await startVideoRecording(filePath: filePath)
-      if(startVideoRecordingRes != nil){
+      if startVideoRecordingRes != nil {
         return startVideoRecordingRes
       }
       return nil
-    }catch{
+    } catch {
       return FlutterError(code: "startVideoRecordingAndStreamingError", message: "catch error", details: nil)
     }
   }
@@ -390,15 +495,35 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   
   //获取直播流信息
   private func getStreamStatistics() async -> [String: Any?] {
-    do{
-      guard let newRtmpStream = rtmpStream, let newTexture = texture else{
+    do {
+      guard let newTexture = texture else {
+        return [:]
+      }
+      let hasAudio = await mixer?.getHasAudio() ?? true
+      let hasVideo = await mixer?.getHasVideo() ?? true
+      if currentProtocol == "srt", let stream = srtStream {
+        let bitRate = await stream.videoSettings.bitRate
+        return [
+          "fps": 0,
+          "cacheSize": 0,
+          "width": newTexture.bounds.width,
+          "height": newTexture.bounds.height,
+          "bitrate": bitRate,
+          "bytesSend": 0,
+          "sentAudioFrames": nil,
+          "sentVideoFrames": nil,
+          "droppedAudioFrames": nil,
+          "droppedVideoFrames": nil,
+          "isAudioMuted": !hasAudio,
+          "isVideoMuted": !hasVideo
+        ]
+      }
+      guard let newRtmpStream = rtmpStream else {
         return [:]
       }
       let info = await newRtmpStream.info
       let currentFps = await newRtmpStream.currentFPS
       let bitRate = await newRtmpStream.videoSettings.bitRate
-      let hasAudio = await mixer?.getHasAudio() ?? true
-      let hasVideo = await mixer?.getHasVideo() ?? true
       return [
         "fps": currentFps,
         "cacheSize": info.byteCount,
@@ -413,19 +538,27 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         "isAudioMuted": !hasAudio,
         "isVideoMuted": !hasVideo
       ]
-    }catch{
+    } catch {
       return [:]
     }
   }
   //设置音频
-  private func setAudioSettings(bitrate: NSNumber) async -> FlutterError?{
-    do{
-      guard let newRtmpStream = rtmpStream else { return FlutterError(code: "setAudioSettingsError", message: "rtmp Stream error", details: nil)}
+  private func setAudioSettings(bitrate: NSNumber) async -> FlutterError? {
+    do {
+      if currentProtocol == "srt", let stream = srtStream {
+        var audioSettings = await stream.audioSettings
+        audioSettings.bitRate = bitrate.intValue
+        _ = try? await stream.setAudioSettings(audioSettings)
+        return nil
+      }
+      guard let newRtmpStream = rtmpStream else {
+        return FlutterError(code: "setAudioSettingsError", message: "rtmp Stream error", details: nil)
+      }
       var audioSettings = await newRtmpStream.audioSettings
       audioSettings.bitRate = bitrate.intValue
       _ = try? await newRtmpStream.setAudioSettings(audioSettings)
       return nil
-    }catch{
+    } catch {
       return FlutterError(code: "setAudioSettingsError", message: "catch error", details: nil)
     }
   }
@@ -440,6 +573,26 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     bitRateMode: String?
   ) async -> FlutterError? {
     do {
+      if currentProtocol == "srt", let stream = srtStream {
+        var videoSettings = await stream.videoSettings
+        if let bitrate {
+          videoSettings.bitRate = bitrate.intValue
+        }
+        if let width, let height {
+          videoSettings.videoSize = CGSize(width: .init(width.intValue), height: .init(height.intValue))
+        }
+        if let frameInterval {
+          videoSettings.maxKeyFrameIntervalDuration = frameInterval.int32Value
+        }
+        if let profileLevel {
+          videoSettings.profileLevel = ProfileLevel(rawValue: profileLevel)?.kVTProfileLevel ?? ProfileLevel.H264_Baseline_AutoLevel.kVTProfileLevel
+        }
+        if let expectedFrameRate {
+          videoSettings.expectedFrameRate = expectedFrameRate.doubleValue
+        }
+        try await stream.setVideoSettings(videoSettings)
+        return nil
+      }
       guard let newRtmpStream = rtmpStream else {
         return FlutterError(code: "setVideoSettingsError", message: "rtmp Stream error", details: nil)
       }
@@ -605,6 +758,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         result(FlutterError(code: "startVideoRecordingAndStreamingError", message: "params Empty", details: nil))
         return
       }
+      let protocolName = (arguments["protocol"] as? String) ?? "rtmp"
       let fileManager = FileManager.default
       if fileManager.fileExists(atPath: filePath) {
         result(FlutterError(
@@ -615,7 +769,12 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         return
       }
       Task{
-        let res = await startVideoRecordingAndStreaming(filePath: filePath, url: url,frameRate: bitrate)
+        let res = await startVideoRecordingAndStreaming(
+          filePath: filePath,
+          url: url,
+          frameRate: bitrate,
+          protocolName: protocolName
+        )
         result(res)
       }
     case "stopRecordingOrStreaming":
@@ -635,9 +794,15 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         ))
         return
       }
+      let protocolName = (arguments["protocol"] as? String) ?? "rtmp"
       Task {
-        print("connect Url \(url)")
-        let res = await startVideoStreaming(url: url,frameRate: bitrate ,isPlay: arguments["isPlay"] as? Bool)
+        print("connect Url \(url) protocol \(protocolName)")
+        let res = await startVideoStreaming(
+          url: url,
+          frameRate: bitrate,
+          protocolName: protocolName,
+          isPlay: arguments["isPlay"] as? Bool
+        )
         result(res)
       }
       

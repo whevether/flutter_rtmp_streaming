@@ -52,6 +52,14 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   CameraDescription? _cameraDesc;
   final TextEditingController _textFieldController =
       TextEditingController(text: "rtmp://192.168.1.15/live/live");
+  StreamingProtocol _selectedProtocol = StreamingProtocol.rtmp;
+
+  List<StreamingProtocol> get _availableProtocols {
+    if (Platform.isIOS) {
+      return const [StreamingProtocol.rtmp, StreamingProtocol.srt];
+    }
+    return StreamingProtocol.values;
+  }
 
   /// RootEncoder 2.7.0+：BT.709 与 RTMP ping/RTT 示例
   bool _forceBt709 = false;
@@ -632,8 +640,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         await controller.setForceBt709Color(_forceBt709);
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
       }
-      await controller.startVideoStreaming(myUrl);
-      showInSnackBar('Streaming video to $myUrl');
+      await controller.startVideoStreaming(myUrl, protocol: _selectedProtocol);
+      showInSnackBar(
+          'Streaming (${_selectedProtocol.name}) video to $myUrl');
       await WakelockPlus.enable();
       _startAndroidStreamStatsTimer();
     } on CameraException catch (e) {
@@ -674,8 +683,11 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
       }
       videoPath = filePath;
-      await controller.startVideoRecordingAndStreaming(videoPath!, myUrl);
-      showInSnackBar('Recording streaming video to $myUrl');
+      await controller.startVideoRecordingAndStreaming(
+          videoPath!, myUrl,
+          protocol: _selectedProtocol);
+      showInSnackBar(
+          'Recording streaming (${_selectedProtocol.name}) video to $myUrl');
       await WakelockPlus.enable();
       _startAndroidStreamStatsTimer();
     } on CameraException catch (e) {
@@ -779,34 +791,85 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   
 
   Future<String> _getUrl() async {
-    // Open up a dialog for the url
+    // Open up a dialog for the url + protocol
     String result = _textFieldController.text;
+    StreamingProtocol selected = _selectedProtocol;
+    if (!_availableProtocols.contains(selected)) {
+      selected = StreamingProtocol.rtmp;
+    }
 
     return await showDialog(
         context: context,
         builder: (context) {
-          return AlertDialog(
-            title: Text('Url to Stream to'),
-            content: TextField(
-              controller: _textFieldController,
-              decoration: InputDecoration(hintText: "Url to Stream to"),
-              onChanged: (String str) => result = str,
-            ),
-            actions: <Widget>[
-              TextButton(
-                child:
-                    Text(MaterialLocalizations.of(context).cancelButtonLabel),
-                onPressed: () {
-                  Navigator.of(context).pop();
-                },
-              ),
-              TextButton(
-                child: Text(MaterialLocalizations.of(context).okButtonLabel),
-                onPressed: () {
-                  Navigator.pop(context, result);
-                },
-              )
-            ],
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              return AlertDialog(
+                title: Text('Url to Stream to'),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    DropdownButtonFormField<StreamingProtocol>(
+                      value: selected,
+                      decoration: const InputDecoration(labelText: 'Protocol'),
+                      items: _availableProtocols
+                          .map((p) => DropdownMenuItem(
+                                value: p,
+                                child: Text(p.name.toUpperCase()),
+                              ))
+                          .toList(),
+                      onChanged: (value) {
+                        if (value == null) return;
+                        setDialogState(() {
+                          selected = value;
+                          // Seed a typical URL for the chosen protocol.
+                          switch (value) {
+                            case StreamingProtocol.rtmp:
+                              _textFieldController.text =
+                                  'rtmp://192.168.1.15/live/live';
+                            case StreamingProtocol.rtsp:
+                              _textFieldController.text =
+                                  'rtsp://192.168.1.15:8554/live';
+                            case StreamingProtocol.srt:
+                              _textFieldController.text =
+                                  'srt://192.168.1.15:9000';
+                            case StreamingProtocol.udp:
+                              _textFieldController.text =
+                                  'udp://192.168.1.15:5004';
+                            case StreamingProtocol.whip:
+                              _textFieldController.text =
+                                  'https://example.com/whip';
+                          }
+                          result = _textFieldController.text;
+                        });
+                      },
+                    ),
+                    TextField(
+                      controller: _textFieldController,
+                      decoration:
+                          const InputDecoration(hintText: "Url to Stream to"),
+                      onChanged: (String str) => result = str,
+                    ),
+                  ],
+                ),
+                actions: <Widget>[
+                  TextButton(
+                    child: Text(
+                        MaterialLocalizations.of(context).cancelButtonLabel),
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                    },
+                  ),
+                  TextButton(
+                    child:
+                        Text(MaterialLocalizations.of(context).okButtonLabel),
+                    onPressed: () {
+                      _selectedProtocol = selected;
+                      Navigator.pop(context, result);
+                    },
+                  )
+                ],
+              );
+            },
           );
         });
   }
