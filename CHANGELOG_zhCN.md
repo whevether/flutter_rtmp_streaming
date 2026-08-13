@@ -1,3 +1,10 @@
+## 2.0.1
+
+1. **Android**：修复 `initialize` 之后、`CameraPreview` 尚未挂载时调用编码参数 API 报 `Camera not initialized` 的问题。
+   - `setAudioSettings` / `setVideoSettings` / `setFrameRate` / `setForceBt709Color` / `setRtmpShouldSendPings` 会先缓存参数，在原生 View 创建时应用（预览重建时也会保留）。
+2. **文档**：补充 Android 上上述 API 的调用时机说明；推流前仍需挂载 `CameraPreview`。
+
+
 ## 2.0.0
 
 1. **多协议推流**

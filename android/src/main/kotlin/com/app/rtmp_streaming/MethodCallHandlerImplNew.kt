@@ -153,13 +153,34 @@ class MethodCallHandlerImplNew(
             }
             "setForceBt709Color" -> {
                 Log.i("Stuff", "setForceBt709Color")
-                getCameraView()?.setForceBt709Color(call.argument("enabled"), result)
-                    ?: result.error("no_camera", "Camera not initialized", null)
+                val enabled = call.argument<Boolean>("enabled")
+                if (enabled == null) {
+                    result.error("setForceBt709Color", "enabled is required", null)
+                } else {
+                    // Always cache so remounted CameraPreview keeps the value.
+                    nativeViewFactory?.pendingForceBt709Color = enabled
+                    val view = getCameraView()
+                    if (view != null) {
+                        view.setForceBt709Color(enabled, result)
+                    } else {
+                        result.success(null)
+                    }
+                }
             }
             "setRtmpShouldSendPings" -> {
                 Log.i("Stuff", "setRtmpShouldSendPings")
-                getCameraView()?.setRtmpShouldSendPings(call.argument("enabled"), result)
-                    ?: result.error("no_camera", "Camera not initialized", null)
+                val enabled = call.argument<Boolean>("enabled")
+                if (enabled == null) {
+                    result.error("setRtmpShouldSendPings", "enabled is required", null)
+                } else {
+                    nativeViewFactory?.pendingRtmpShouldSendPings = enabled
+                    val view = getCameraView()
+                    if (view != null) {
+                        view.setRtmpShouldSendPings(enabled, result)
+                    } else {
+                        result.success(null)
+                    }
+                }
             }
             "prepareForVideoStreaming" -> {
                 getCameraView()?.prepareForVideoStreaming(result)
@@ -182,21 +203,47 @@ class MethodCallHandlerImplNew(
                     ?: result.error("no_camera", "Camera not initialized", null)
             }
             "setAudioSettings" -> {
-                getCameraView()?.setAudioSettings(call.argument("bitrate"), result)
-                    ?: result.error("no_camera", "Camera not initialized", null)
+                val bitrate = call.argument<Int>("bitrate")
+                if (bitrate == null) {
+                    result.error("setAudioSettings", "bitrate is required", null)
+                } else {
+                    nativeViewFactory?.pendingAudioBitrate = bitrate
+                    val view = getCameraView()
+                    if (view != null) {
+                        view.setAudioSettings(bitrate, result)
+                    } else {
+                        result.success(null)
+                    }
+                }
             }
             "setVideoSettings" -> {
-                getCameraView()?.setVideoSettings(
-                    call.argument("bitrate"),
-                    call.argument("width"),
-                    call.argument("height"),
-                    call.argument("frameInterval"),
-                    result
-                ) ?: result.error("no_camera", "Camera not initialized", null)
+                val bitrate = call.argument<Int>("bitrate")
+                val width = call.argument<Int>("width")
+                val height = call.argument<Int>("height")
+                val frameInterval = call.argument<Int>("frameInterval")
+                if (bitrate != null) {
+                    nativeViewFactory?.pendingVideoBitrate = bitrate
+                }
+                val view = getCameraView()
+                if (view != null) {
+                    view.setVideoSettings(bitrate, width, height, frameInterval, result)
+                } else {
+                    result.success(null)
+                }
             }
             "setFrameRate" -> {
-                getCameraView()?.setFrameRate(call.argument("frameRate"), result)
-                    ?: result.error("no_camera", "Camera not initialized", null)
+                val frameRate = call.argument<Int>("frameRate")
+                if (frameRate == null || frameRate <= 0) {
+                    result.error("setFrameRate", "frameRate must be > 0", null)
+                } else {
+                    nativeViewFactory?.pendingFrameRate = frameRate
+                    val view = getCameraView()
+                    if (view != null) {
+                        view.setFrameRate(frameRate, result)
+                    } else {
+                        result.success(null)
+                    }
+                }
             }
             "switchCamera" -> {
                 Log.i("Stuff", "switchCamera")
@@ -269,6 +316,12 @@ class MethodCallHandlerImplNew(
                 } else {
                     result.success(null)
                 }
+                nativeViewFactory?.pendingAudioBitrate = null
+                nativeViewFactory?.pendingVideoBitrate = null
+                nativeViewFactory?.pendingFrameRate = null
+                nativeViewFactory?.pendingForceBt709Color = null
+                nativeViewFactory?.pendingRtmpShouldSendPings = null
+                nativeViewFactory?.cameraNativeView = null
                 handler = null
                 dartMessenger = null
                 // Keep nativeViewFactory for hot restart - Flutter will call initialize again

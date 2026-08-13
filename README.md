@@ -102,9 +102,13 @@ final controller = CameraController(
 
 await controller.initialize(cameras.first);
 
+// Mount CameraPreview in the widget tree (Android needs AndroidView for the native camera)
+// setState(() {}); // refresh UI in a StatefulWidget
+
 // iOS: pre-attach audio to reduce start latency
 await controller.prepareForVideoStreaming();
 
+// Encoder settings after initialize, before go-live (Android caches if preview is not mounted yet)
 await controller.setAudioSettings(128 * 1024); // bps
 await controller.setVideoSettings(bitrate: 1500 * 1024);
 await controller.setFrameRate(30);
@@ -185,6 +189,7 @@ await controller.setHasVideo(true);
 ### `setAudioSettings(int bitrate)`
 - **Purpose**: AAC encoder bitrate in **bps**.
 - **When**: After `initialize`, before starting stream/record.
+- **Android**: The native camera view is created with `CameraPreview`. Calls before the preview mounts are cached and applied when the view appears. You still need `CameraPreview` before streaming.
 
 ```dart
 await controller.setAudioSettings(128 * 1024);
@@ -194,6 +199,7 @@ await controller.startVideoStreaming(url);
 ---
 
 ### `setVideoSettings({ ... })`
+- **Android**: `bitrate` is cached if the preview is not mounted yet, then applied on mount / next prepare; can hot-update while live.
 
 | Parameter | Cross-platform | Notes |
 |-----------|----------------|-------|
@@ -219,6 +225,7 @@ await controller.setVideoSettings(
 ### `setFrameRate(int frameRate)`
 - **Purpose**: Target capture/encode frame rate.
 - **When**: After `initialize`, before streaming.
+- **Android**: Same as `setAudioSettings` — values can be cached before the preview mounts.
 
 ```dart
 await controller.setFrameRate(30);
@@ -247,6 +254,7 @@ final stats = await controller.getStreamStatistics();
 ---
 
 ### Android: `setForceBt709Color(bool enabled)`
+After `initialize`, before record/stream. Cached if `CameraPreview` is not mounted yet.
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
@@ -312,6 +320,7 @@ await controller.unlockExposure();
 ---
 
 ### Android: `setRtmpShouldSendPings(bool enabled)`
+After `initialize`, before `startVideoStreaming`. Cached if `CameraPreview` is not mounted yet.
 ```dart
 await controller.setRtmpShouldSendPings(true);
 await controller.startVideoStreaming(url);
@@ -331,4 +340,4 @@ await controller.startVideoStreaming(url);
 
 ## 🚀 Conclusion
 `rtmp_streaming` provides cross-platform RTMP streaming and recording for Flutter.  
-Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; iOS retains playback and multitasking extras, Android retains filters, BT.709, and RTT.
+Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; since **2.0.1**, Android can safely set encoder options before `CameraPreview` mounts (cached, then applied). iOS retains playback and multitasking extras; Android retains filters, BT.709, and RTT.

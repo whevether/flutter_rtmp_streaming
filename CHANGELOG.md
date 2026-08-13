@@ -1,3 +1,10 @@
+## 2.0.1
+
+1. **Android**: Fix `Camera not initialized` when calling encoder settings after `initialize` but before `CameraPreview` mounts.
+   - `setAudioSettings` / `setVideoSettings` / `setFrameRate` / `setForceBt709Color` / `setRtmpShouldSendPings` now cache values and apply them when the platform view is created (and keep the cache on remount).
+2. **Docs**: Clarify Android timing for these APIs and that `CameraPreview` is still required before starting a stream.
+
+
 ## 2.0.0
 
 1. **Multi-protocol streaming**

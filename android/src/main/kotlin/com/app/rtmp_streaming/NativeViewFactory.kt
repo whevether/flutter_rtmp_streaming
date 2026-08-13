@@ -14,8 +14,23 @@ internal class NativeViewFactory(private val activity: Activity) : PlatformViewF
     var enableAudio: Boolean = false
     var dartMessenger: DartMessenger? = null
 
+    /** Cached until CameraPreview's AndroidView creates the platform view. */
+    var pendingAudioBitrate: Int? = null
+    var pendingVideoBitrate: Int? = null
+    var pendingFrameRate: Int? = null
+    var pendingForceBt709Color: Boolean? = null
+    var pendingRtmpShouldSendPings: Boolean? = null
+
     override fun create(context: Context, id: Int, args: Any?): PlatformView {
-        cameraNativeView = CameraNativeView(activity, enableAudio, preset, cameraName, dartMessenger)
-        return cameraNativeView!!
+        val view = CameraNativeView(activity, enableAudio, preset, cameraName, dartMessenger)
+        view.applyCachedEncoderSettings(
+            audioBitrate = pendingAudioBitrate,
+            videoBitrate = pendingVideoBitrate,
+            frameRate = pendingFrameRate,
+            forceBt709Color = pendingForceBt709Color,
+            rtmpShouldSendPings = pendingRtmpShouldSendPings,
+        )
+        cameraNativeView = view
+        return view
     }
 }

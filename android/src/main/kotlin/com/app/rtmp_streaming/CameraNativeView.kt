@@ -326,6 +326,39 @@ class CameraNativeView(
         }
     }
 
+    /** Apply settings that were set after Dart [initialize] but before AndroidView was created. */
+    fun applyCachedEncoderSettings(
+        audioBitrate: Int?,
+        videoBitrate: Int?,
+        frameRate: Int?,
+        forceBt709Color: Boolean?,
+        rtmpShouldSendPings: Boolean?,
+    ) {
+        if (audioBitrate != null) {
+            customAudioBitrate = audioBitrate
+        }
+        if (videoBitrate != null) {
+            customVideoBitrate = videoBitrate
+        }
+        if (frameRate != null && frameRate > 0) {
+            customVideoFps = frameRate
+            try {
+                genericCamera.glInterface?.forceFpsLimit(frameRate)
+            } catch (_: Exception) {
+            }
+        }
+        if (forceBt709Color != null) {
+            this.forceBt709Color = forceBt709Color
+            try {
+                genericCamera.forceBt709Color(forceBt709Color)
+            } catch (_: Exception) {
+            }
+        }
+        if (rtmpShouldSendPings != null) {
+            this.rtmpShouldSendPings = rtmpShouldSendPings
+        }
+    }
+
     fun setAudioSettings(bitrate: Int?, result: MethodChannel.Result) {
         if (bitrate == null) {
             result.error("setAudioSettings", "bitrate is required", null)

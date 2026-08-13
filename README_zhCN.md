@@ -104,10 +104,13 @@ final controller = CameraController(
 
 await controller.initialize(cameras.first);
 
+// 界面需挂载 CameraPreview（Android 依赖 AndroidView 创建原生相机）
+// setState(() {}); // 若在 StatefulWidget 中请刷新 UI
+
 // iOS 建议：提前准备音频，减少开播时预览卡顿
 await controller.prepareForVideoStreaming();
 
-// 编码参数（开播前设置）
+// 编码参数（initialize 之后、开播前；Android 在预览未挂载时也会先缓存）
 await controller.setAudioSettings(128 * 1024); // bps
 await controller.setVideoSettings(bitrate: 1500 * 1024);
 await controller.setFrameRate(30);
@@ -198,6 +201,7 @@ await controller.setHasVideo(true);  // 恢复
 ### `setAudioSettings(int bitrate)`
 - **作用**：设置 AAC 音频编码码率（单位：**bps**）。
 - **调用时机**：`initialize` 之后、开始推流/录制**之前**（下次编码准备时生效）。
+- **Android 说明**：原生相机 View 随 `CameraPreview` 创建；预览未挂载时调用会先缓存，挂载后自动应用。推流前仍需显示 `CameraPreview`。
 - **示例**：
 ```dart
 await controller.setAudioSettings(128 * 1024);
@@ -207,6 +211,8 @@ await controller.startVideoStreaming(url);
 ---
 
 ### `setVideoSettings({ ... })`
+- **Android 说明**：`bitrate` 在预览未挂载时会先缓存，挂载/`prepare` 后生效；推流中可热更新。
+
 | 参数 | 双端 | 说明 |
 |------|------|------|
 | `bitrate` | ✅ | 视频码率（bps）。Android 推流中可热更新。 |
@@ -236,6 +242,7 @@ await controller.setVideoSettings(
 ### `setFrameRate(int frameRate)`
 - **作用**：设置采集/编码目标帧率。
 - **调用时机**：`initialize` 之后、开始推流之前。
+- **Android 说明**：与 `setAudioSettings` 相同，预览未挂载时可先缓存。
 - **示例**：
 ```dart
 await controller.setFrameRate(30);
@@ -268,7 +275,7 @@ print('${stats.fps} fps, muted=${stats.isAudioMuted}');
 
 ### Android：`setForceBt709Color(bool enabled)`
 - **作用**：编码使用 BT.709 色彩矩阵。
-- **调用时机**：`initialize` 之后，开始录制或推流之前。
+- **调用时机**：`initialize` 之后，开始录制或推流之前（预览未挂载时会先缓存）。
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
@@ -332,7 +339,7 @@ await controller.unlockExposure();
 
 ### Android：`setRtmpShouldSendPings(bool enabled)`
 - **作用**：开启 RTMP 周期 ping，用于测量 RTT。
-- **调用时机**：`initialize` 之后、`startVideoStreaming` **之前**。
+- **调用时机**：`initialize` 之后、`startVideoStreaming` **之前**（预览未挂载时会先缓存）。
 ```dart
 await controller.setRtmpShouldSendPings(true);
 await controller.startVideoStreaming(url);
@@ -354,4 +361,4 @@ await controller.startVideoStreaming(url);
 
 ## 🚀 总结
 `rtmp_streaming` 为 Flutter 开发者提供跨平台、现代化的 RTMP 推流与视频录制能力。  
-自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 等扩展能力。
+自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；**2.0.1** 起 Android 可在 `CameraPreview` 挂载前安全设置编码参数（先缓存后应用）。iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 等扩展能力。
