@@ -1,3 +1,4 @@
+import com.android.build.api.dsl.CommonExtension
 allprojects {
     repositories {
         google()
@@ -13,8 +14,8 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 subprojects {
     afterEvaluate {
         if (plugins.hasPlugin("com.android.application") || plugins.hasPlugin("com.android.library")) {
-            extensions.configure<com.android.build.gradle.BaseExtension> {
-                compileSdkVersion(37)
+            extensions.configure<CommonExtension> {
+                compileSdk { version = release(37) }
                 buildToolsVersion = "37.0.0"
                 ndkVersion = "30.0.15729638" 
                 if (namespace == null) {
