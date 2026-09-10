@@ -19,8 +19,9 @@ Pass an explicit `StreamingProtocol` (default `rtmp`). iOS WHIP/WHEP use `RTCHai
 ---
 
 ## ⚙️ Technical Foundation
-- **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.8.0`](https://github.com/pedroSG94/RootEncoder)  
+- **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.8.1`](https://github.com/pedroSG94/RootEncoder) (+ `extra-sources` for CameraX / UVC)  
 - **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift) (includes `SRTHaishinKit`, `RTCHaishinKit` for WHIP/WHEP alpha)  
+- **Android build**: AGP **9.4.0**, Gradle **9.7.1**, Kotlin DSL 
 
 By leveraging these mature libraries, `rtmp_streaming` provides a consistent cross-platform API interface, reducing development complexity.
 
@@ -60,6 +61,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 - 🗑️ Dispose plugin: `dispose`  
 - 📸 Snapshot while streaming: `takePicture`  
 - 🖼️ Overlay text/image: `setOverlayText` / `setOverlayImage` / `clearOverlay`  
+- 📡 Multi-streaming: `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (no WHIP/WHEP)  
 
 ---
 
@@ -73,7 +75,6 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - ⚙️ Session preset: `setSessionPreset`  
 - 🖼️ Screen dimensions: `setScreenSettings`  
 - 🎞️ `setVideoSettings` extras: `expectedFrameRate`, `bitRateMode` (2.2.1+ / 2.2.2+), `profileLevel`  
-- 📡 Multi-streaming: `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (no WHIP/WHEP)  
 
 ---
 
@@ -84,8 +85,18 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - ❌ Remove filter: `removeFilter`  
 - 🎙️ Pitch shift: `setPitchShift` (RootEncoder `PitchShiftEffect`; `1.0` disables)  
 - 🔒 Exposure lock: `lockExposure` / `unlockExposure` / `isExposureLocked` (after preview or streaming starts)  
+- 🌡️ White balance lock: `lockWhiteBalance` / `unlockWhiteBalance` / `isWhiteBalanceLocked`  
+- 👆 Tap to meter: `tapToMeter` (exposure or white balance)  
+- 🎞️ Codecs: `setVideoCodec` / `setAudioCodec` (H264/H265/AV1/VP8/VP9; AAC/HE-AAC/OPUS/G711)  
+- 🔇 AEC / NS: `setAudioProcessing`  
+- 📷 Video source: `setVideoSource` (`camera2` / `cameraX` / `uvc` / `screen`)  
+- 🖥️ Screen capture permission: `requestScreenCapture` (required before `VideoSourceType.screen`)  
+- 🎤 Custom PCM: `enableBufferAudio` / `feedPcmAudio`  
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+, RTMP only)  
+- 📊 Queue stats in `getStreamStatistics`: `queueBytesOut`, `bytesOutPerSecond`, `queueCongestionPercent`, `totalBytesOut`  
+
+> **WHEP** remains Android-unsupported (RootEncoder is push-only; use iOS for WHEP). 
 
 ---
 
@@ -146,6 +157,12 @@ await controller.startVideoStreaming(
 // await controller.startVideoStreaming(
 //   'https://your-server/whep',
 //   protocol: StreamingProtocol.whep,
+// );
+
+// Android RTSP / UDP
+// await controller.startVideoStreaming(
+//   'rtsp://your-server:8554/live',
+//   protocol: StreamingProtocol.rtsp,
 // );
 ```
 
@@ -217,6 +234,7 @@ await controller.setVideoSettings(bitrate: 800 * 1024); // hot update on Android
 await controller.setVideoSettings(
   expectedFrameRate: 30,
   bitRateMode: 'average',
+  profileLevel: 'H264_Baseline_AutoLevel',
 );
 ```
 
@@ -246,15 +264,18 @@ Returns `StreamStatistics` while streaming. Key fields:
 | `isAudioMuted` / `isVideoMuted` | Both platforms (1.0.8+) |
 | `rttMicros` | Android RTT (requires `setRtmpShouldSendPings`) |
 | `bytesSend` | Bytes sent |
+| `queueBytesOut` / `bytesOutPerSecond` / `queueCongestionPercent` / `totalBytesOut` | Android queue / throughput (RootEncoder 2.8.1+) |
 
 ```dart
 final stats = await controller.getStreamStatistics();
+print('${stats.fps} fps, muted=${stats.isAudioMuted}');
 ```
 
 ---
 
 ### Android: `setForceBt709Color(bool enabled)`
-After `initialize`, before record/stream. Cached if `CameraPreview` is not mounted yet.
+- **Purpose**: Encode with the BT.709 color matrix.
+- **When**: After `initialize`, before record/stream. Cached if `CameraPreview` is not mounted yet.
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
@@ -263,9 +284,11 @@ await controller.startVideoStreaming(url);
 ---
 
 ### Android: `setPitchShift(double pitch)`
+- **Purpose**: Mic PCM pitch shift (RootEncoder `PitchShiftEffect`).
+- **Notes**: Native clamps `pitch` to `0.5…3.0`; pass `1.0` to disable.
 ```dart
-// Raise pitch (chipmunk). Pass 1.0 to disable.
 await controller.setPitchShift(1.8);
+await controller.setPitchShift(1.0); // disable
 ```
 
 ---
@@ -289,7 +312,7 @@ await controller.clearOverlay();
 ---
 
 ### Multi-streaming: `startMultiStreaming`
-**iOS only.** WHIP/WHEP are not allowed. Example app defaults to one RTMP + one SRT (`dest1` / `dest2`); use **Stop dest1 only** to drop one path.
+**Android + iOS.** WHIP/WHEP are not allowed. Example app defaults to one RTMP + one SRT (`dest1` / `dest2`); use **Stop dest1 only** to drop one path.
 ```dart
 await controller.startMultiStreaming([
   StreamDestination(
@@ -310,7 +333,8 @@ await controller.stopMultiStreaming();
 ---
 
 ### Android: `lockExposure` / `unlockExposure` / `isExposureLocked`
-Call after preview or streaming has started.
+- **Purpose**: Lock / unlock Camera2 auto-exposure (avoids flicker from faces or lighting changes).
+- **When**: After preview or streaming has started.
 ```dart
 final locked = await controller.lockExposure();
 final isLocked = await controller.isExposureLocked();
@@ -320,7 +344,8 @@ await controller.unlockExposure();
 ---
 
 ### Android: `setRtmpShouldSendPings(bool enabled)`
-After `initialize`, before `startVideoStreaming`. Cached if `CameraPreview` is not mounted yet.
+- **Purpose**: Enable periodic RTMP pings to measure RTT.
+- **When**: After `initialize`, before `startVideoStreaming`. Cached if `CameraPreview` is not mounted yet.
 ```dart
 await controller.setRtmpShouldSendPings(true);
 await controller.startVideoStreaming(url);
@@ -331,6 +356,8 @@ print(stats.rttMicros);
 ---
 
 ### iOS: `setMultitaskingCameraAccessEnabled(bool enabled)`
+- **Purpose**: Keep camera capture in Split View / PiP (HaishinKit 2.2.5+).
+- **Requires**: iOS 17+, and the device must support `isMultitaskingCameraAccessSupported`.
 ```dart
 await controller.setMultitaskingCameraAccessEnabled(true);
 await controller.startVideoStreaming(url);
@@ -339,5 +366,5 @@ await controller.startVideoStreaming(url);
 ---
 
 ## 🚀 Conclusion
-`rtmp_streaming` provides cross-platform RTMP streaming and recording for Flutter.  
-Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; since **2.0.1**, Android can safely set encoder options before `CameraPreview` mounts (cached, then applied). iOS retains playback and multitasking extras; Android retains filters, BT.709, and RTT.
+`rtmp_streaming` provides cross-platform streaming and recording for Flutter.  
+Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; since **2.0.1**, Android can safely set encoder options before `CameraPreview` mounts (cached, then applied). Since **2.1.0**, Android multi-streaming / codecs / video sources ship with RootEncoder 2.8.1, and `CameraValue.isStreaming` replaces `isStreamingVideoRtmp`. iOS retains playback and multitasking extras; Android retains filters, BT.709, RTT, and queue stats.

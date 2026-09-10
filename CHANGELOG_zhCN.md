@@ -1,3 +1,16 @@
+## 2.1.0
+
+1. **Android 构建**：AGP **9.4.0**、Gradle **9.7.1**，插件 `android/` 改为 Kotlin DSL（`.gradle.kts`）。移除插件侧 `gradle/wrapper` 与 `gradle.properties`（由宿主 / example 决定 Gradle 与 AndroidX）。
+2. **RootEncoder 2.8.1**：`library` + `extra-sources`；叠字滤镜类重命名（`GifFilterRender` / `ImageFilterRender` / `TextFilterRender`）；`SpriteGestureController.setSprite`；队列感知 ABR（`QueueAwareBitrateAdapter`）。
+3. **Android 编解码 / 音频**：`setVideoCodec` / `setAudioCodec`；`setAudioProcessing`（回声消除 + 降噪）。
+4. **Android 相机控制**：白平衡锁定；`tapToMeter`（曝光 / 白平衡）。
+5. **Android 多路推流**：`startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`，经 `MultiCamera2` 与 iOS Dart API 对齐（不含 WHIP/WHEP）。
+6. **Android 视频源**：`setVideoSource`（`camera2` / `cameraX` / `uvc` / `screen`）、`requestScreenCapture`、`enableBufferAudio` / `feedPcmAudio`（非 camera2 走 StreamBase 路径）。
+7. **统计**：`StreamStatistics` 新增 `queueBytesOut`、`bytesOutPerSecond`、`queueCongestionPercent`、`totalBytesOut`。
+8. **加固**：dispose 不再重复完成 MethodChannel；MediaProjection 在替换/dispose 时 stop；GenericStream 重试/编解码/码率/BT.709 对齐；推流中再次 start 改为重启；pending 缓存覆盖编解码/视频源/AEC。
+9. **破坏性变更**：`CameraValue.isStreamingVideoRtmp` 重命名为 `isStreaming`（覆盖全部协议）；移除 Android 空 `close()` 兼容桩。
+10. **WHEP**：Android 仍不支持 ❌（RootEncoder 仅有 WHIP）。
+
 ## 2.0.1
 
 1. **Android**：修复 `initialize` 之后、`CameraPreview` 尚未挂载时调用编码参数 API 报 `Camera not initialized` 的问题。
@@ -16,7 +29,7 @@
    - `setOverlayText` / `setOverlayImage` / `clearOverlay`。
    - iOS：开启叠字后画布与编码尺寸随横竖屏对齐，避免预览被压扁/拉伸。
 
-3. **多路推流**（仅 iOS）
+3. **多路推流**（仅 iOS；Android 自 **2.1.0** 起支持）
    - `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP）。
    - Example 默认一路 RTMP + 一路 SRT。
 

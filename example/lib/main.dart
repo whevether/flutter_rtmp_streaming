@@ -80,7 +80,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   /// HaishinKit 2.2.5+：分屏/多任务时保持相机（iOS 17+）
   bool _iosMultitaskingCamera = false;
 
-  bool get isStreaming => controller.value.isStreamingVideoRtmp ?? false;
+  bool get isStreaming => controller.value.isStreaming ?? false;
 
   bool get isControllerInitialized => controller.value.isInitialized ?? false;
   bool get isRecordingVideo => controller.value.isRecordingVideo ?? false;
@@ -309,7 +309,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                 }
               : null,
         ),
-        if (Platform.isIOS) ...[
+        if (Platform.isIOS || Platform.isAndroid) ...[
           ElevatedButton.icon(
             icon: Icon(
               !_isMultiStreaming ? Icons.hub : Icons.stop_circle,

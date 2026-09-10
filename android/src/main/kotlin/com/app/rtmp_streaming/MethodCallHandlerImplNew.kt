@@ -3,17 +3,15 @@ package com.app.rtmp_streaming
 import android.app.Activity
 import android.content.Context
 import android.hardware.camera2.CameraAccessException
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
-import android.hardware.camera2.CameraMetadata
+import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
 import android.util.Size
-import android.view.OrientationEventListener
 import androidx.annotation.RequiresApi
 import com.app.rtmp_streaming.CameraPermissions.ResolutionPreset
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.*
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.platform.PlatformViewRegistry
@@ -28,8 +26,6 @@ class MethodCallHandlerImplNew(
 ) : MethodCallHandler {
 
     private val methodChannel: MethodChannel
-//    private val imageStreamChannel: EventChannel
-    private var currentOrientation = OrientationEventListener.ORIENTATION_UNKNOWN
     private var dartMessenger: DartMessenger? = null
     private var nativeViewFactory: NativeViewFactory? = null
     private var handler: Handler? = null
@@ -38,6 +34,17 @@ class MethodCallHandlerImplNew(
 
     private val textureId = 0L
 
+    private val SCREEN_CAPTURE_REQUEST = 4001
+    private var pendingScreenResult: MethodChannel.Result? = null
+    private var screenCaptureListenerRegistered = false
+    var activityBinding: ActivityPluginBinding? = null
+        set(value) {
+            if (field !== value) {
+                screenCaptureListenerRegistered = false
+            }
+            field = value
+        }
+
     init {
         val handlerThread = HandlerThread("WorkerThread").apply {
             start()
@@ -45,7 +52,6 @@ class MethodCallHandlerImplNew(
         handler = Handler(handlerThread.looper)
         Log.d("TAG", "init $platformViewRegistry")
         methodChannel = MethodChannel(messenger, "com.rtmp_streaming")
-//        imageStreamChannel = EventChannel(messenger, "plugins.flutter.io/rtmp_publisher/imageStream")
         methodChannel.setMethodCallHandler(this)
         dartMessenger = DartMessenger(messenger, id)
         nativeViewFactory = NativeViewFactory(activity)
@@ -305,29 +311,189 @@ class MethodCallHandlerImplNew(
                 getCameraView()?.isExposureLocked(result)
                     ?: result.error("no_camera", "Camera not initialized", null)
             }
+            "setVideoCodec" -> {
+                val name = call.argument<String>("name")
+                nativeViewFactory?.pendingVideoCodec = name
+                val view = getCameraView()
+                if (view != null) {
+                    view.setVideoCodec(name, result)
+                } else {
+                    result.success(null)
+                }
+            }
+            "setAudioCodec" -> {
+                val name = call.argument<String>("name")
+                nativeViewFactory?.pendingAudioCodec = name
+                val view = getCameraView()
+                if (view != null) {
+                    view.setAudioCodec(name, result)
+                } else {
+                    result.success(null)
+                }
+            }
+            "setAudioProcessing" -> {
+                val echo = call.argument<Boolean>("echoCanceler")
+                val noise = call.argument<Boolean>("noiseSuppressor")
+                if (echo != null) nativeViewFactory?.pendingEchoCanceler = echo
+                if (noise != null) nativeViewFactory?.pendingNoiseSuppressor = noise
+                val view = getCameraView()
+                if (view != null) {
+                    view.setAudioProcessing(echo, noise, result)
+                } else {
+                    result.success(null)
+                }
+            }
+            "lockWhiteBalance" -> {
+                getCameraView()?.lockWhiteBalance(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "unlockWhiteBalance" -> {
+                getCameraView()?.unlockWhiteBalance(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "isWhiteBalanceLocked" -> {
+                getCameraView()?.isWhiteBalanceLocked(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "tapToMeter" -> {
+                getCameraView()?.tapToMeter(
+                    call.argument<Number>("x")?.toDouble(),
+                    call.argument<Number>("y")?.toDouble(),
+                    call.argument("mode"),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "setVideoSource" -> {
+                val mode = call.argument<String>("mode")
+                nativeViewFactory?.pendingVideoSource = mode
+                val view = getCameraView()
+                if (view != null) {
+                    view.setVideoSource(mode, result)
+                } else {
+                    result.success(null)
+                }
+            }
+            "enableBufferAudio" -> {
+                val enable = call.argument<Boolean>("enable")
+                nativeViewFactory?.pendingUseBufferAudio = enable
+                val view = getCameraView()
+                if (view != null) {
+                    view.enableBufferAudio(enable, result)
+                } else {
+                    result.success(null)
+                }
+            }
+            "feedPcmAudio" -> {
+                getCameraView()?.feedPcmAudio(call.argument("bytes") as ByteArray?, result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "startMultiStreaming" -> {
+                @Suppress("UNCHECKED_CAST")
+                val destinations = call.argument<List<Map<String, Any?>>>("destinations")
+                getCameraView()?.startMultiStreaming(
+                    destinations,
+                    call.argument("bitrate"),
+                    result
+                ) ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "stopStreamingDestination" -> {
+                getCameraView()?.stopStreamingDestination(call.argument("id"), result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "stopMultiStreaming" -> {
+                getCameraView()?.stopMultiStreaming(result)
+                    ?: result.error("no_camera", "Camera not initialized", null)
+            }
+            "requestScreenCapture" -> {
+                requestScreenCapture(result)
+            }
             "dispose" -> {
                 Log.i("Stuff", "dispose")
                 val view = getCameraView()
                 if (view != null) {
-                    // stopVideoStreaming calls result.success/error - do NOT call result again
-                    view.stopVideoStreaming(result)
-                    view.dispose()
-                    result.success(null)
-                } else {
-                    result.success(null)
+                    try {
+                        view.dispose()
+                    } catch (e: Exception) {
+                        Log.e("TAG", "dispose failed", e)
+                    }
                 }
+                result.success(null)
                 nativeViewFactory?.pendingAudioBitrate = null
                 nativeViewFactory?.pendingVideoBitrate = null
                 nativeViewFactory?.pendingFrameRate = null
                 nativeViewFactory?.pendingForceBt709Color = null
                 nativeViewFactory?.pendingRtmpShouldSendPings = null
+                nativeViewFactory?.pendingVideoCodec = null
+                nativeViewFactory?.pendingAudioCodec = null
+                nativeViewFactory?.pendingEchoCanceler = null
+                nativeViewFactory?.pendingNoiseSuppressor = null
+                nativeViewFactory?.pendingVideoSource = null
+                nativeViewFactory?.pendingUseBufferAudio = null
                 nativeViewFactory?.cameraNativeView = null
+                handler?.looper?.thread?.let { t ->
+                    if (t is HandlerThread) t.quitSafely()
+                }
                 handler = null
                 dartMessenger = null
                 // Keep nativeViewFactory for hot restart - Flutter will call initialize again
             }
 
             else -> result.notImplemented()
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    private fun requestScreenCapture(result: MethodChannel.Result) {
+        val binding = activityBinding
+        if (binding == null) {
+            result.error("requestScreenCapture", "Activity not attached", null)
+            return
+        }
+        if (pendingScreenResult != null) {
+            result.error("requestScreenCapture", "Screen capture request already in progress", null)
+            return
+        }
+        val mgr = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        ensureScreenCaptureListener()
+        pendingScreenResult = result
+        activity.startActivityForResult(mgr.createScreenCaptureIntent(), SCREEN_CAPTURE_REQUEST)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    private fun ensureScreenCaptureListener() {
+        if (screenCaptureListenerRegistered) return
+        val binding = activityBinding ?: return
+        screenCaptureListenerRegistered = true
+        binding.addActivityResultListener { requestCode, resultCode, data ->
+            if (requestCode != SCREEN_CAPTURE_REQUEST) return@addActivityResultListener false
+            val pending = pendingScreenResult
+            pendingScreenResult = null
+            if (pending == null) return@addActivityResultListener true
+            if (resultCode == Activity.RESULT_OK && data != null) {
+                val mgr = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+                val projection = mgr.getMediaProjection(resultCode, data)
+                val view = getCameraView()
+                if (projection != null && view != null) {
+                    view.attachScreenMediaProjection(projection, pending)
+                } else {
+                    try {
+                        projection?.stop()
+                    } catch (_: Exception) {
+                    }
+                    pending.error(
+                        "requestScreenCapture",
+                        if (projection == null) {
+                            "Failed to create MediaProjection"
+                        } else {
+                            "Camera not initialized; mount CameraPreview before requestScreenCapture"
+                        },
+                        null
+                    )
+                }
+            } else {
+                pending.error("requestScreenCapture", "User denied or cancelled", null)
+            }
+            true
         }
     }
 
@@ -373,10 +539,10 @@ class MethodCallHandlerImplNew(
                 reply["previewWidth"] = size.width
                 reply["previewHeight"] = size.height
                 reply["eventId"] = id
-                reply["previewQuarterTurns"] = currentOrientation / 90
+                reply["previewQuarterTurns"] = 0
                 Log.i(
                     "TAG",
-                    "open: width: " + reply["previewWidth"] + " height: " + reply["previewHeight"] + " currentOrientation: " + currentOrientation + " quarterTurns: " + reply["previewQuarterTurns"]
+                    "open: width: " + reply["previewWidth"] + " height: " + reply["previewHeight"]
                 )
                 // TODO Refactor cameraView initialisation
                 nativeViewFactory?.cameraName = cameraName

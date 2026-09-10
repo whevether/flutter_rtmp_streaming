@@ -1,4 +1,5 @@
 import com.android.build.api.dsl.CommonExtension
+
 allprojects {
     repositories {
         google()
@@ -17,7 +18,8 @@ subprojects {
             extensions.configure<CommonExtension> {
                 compileSdk { version = release(37) }
                 buildToolsVersion = "37.0.0"
-                ndkVersion = "30.0.15729638" 
+                // Pin to an NDK present on the machine; avoid auto-download of flutter.ndkVersion.
+                ndkVersion = "30.0.16248370"
                 if (namespace == null) {
                     namespace = project.group.toString()
                 }
@@ -25,13 +27,6 @@ subprojects {
         }
     }
     layout.buildDirectory.set(rootProject.layout.buildDirectory.dir(project.name))
-    dependencyLocking {
-        ignoredDependencies.add("io.flutter:*")
-        lockFile = file("${rootProject.projectDir}/project-${project.name}.lockfile")
-        if (!project.hasProperty("local-engine-repo")) {
-            lockAllConfigurations()
-        }
-    }
 }
 subprojects {
     project.evaluationDependsOn(":app")

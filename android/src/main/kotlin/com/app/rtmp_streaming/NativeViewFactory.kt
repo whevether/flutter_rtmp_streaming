@@ -20,6 +20,12 @@ internal class NativeViewFactory(private val activity: Activity) : PlatformViewF
     var pendingFrameRate: Int? = null
     var pendingForceBt709Color: Boolean? = null
     var pendingRtmpShouldSendPings: Boolean? = null
+    var pendingVideoCodec: String? = null
+    var pendingAudioCodec: String? = null
+    var pendingEchoCanceler: Boolean? = null
+    var pendingNoiseSuppressor: Boolean? = null
+    var pendingVideoSource: String? = null
+    var pendingUseBufferAudio: Boolean? = null
 
     override fun create(context: Context, id: Int, args: Any?): PlatformView {
         val view = CameraNativeView(activity, enableAudio, preset, cameraName, dartMessenger)
@@ -29,6 +35,12 @@ internal class NativeViewFactory(private val activity: Activity) : PlatformViewF
             frameRate = pendingFrameRate,
             forceBt709Color = pendingForceBt709Color,
             rtmpShouldSendPings = pendingRtmpShouldSendPings,
+            videoCodec = pendingVideoCodec,
+            audioCodec = pendingAudioCodec,
+            echoCanceler = pendingEchoCanceler,
+            noiseSuppressor = pendingNoiseSuppressor,
+            videoSource = pendingVideoSource,
+            useBufferAudio = pendingUseBufferAudio,
         )
         cameraNativeView = view
         return view

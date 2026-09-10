@@ -1,3 +1,16 @@
+## 2.1.0
+
+1. **Android build**: AGP **9.4.0**, Gradle **9.7.1**, plugin `android/` converted to Kotlin DSL (`.gradle.kts`). Plugin-level `gradle/wrapper` and `gradle.properties` removed (host/example owns Gradle/AndroidX). 
+2. **RootEncoder 2.8.1**: `library` + `extra-sources`; overlay filter renames (`GifFilterRender` / `ImageFilterRender` / `TextFilterRender`); `SpriteGestureController.setSprite`; queue-aware ABR via `QueueAwareBitrateAdapter`.
+3. **Android codecs / audio**: `setVideoCodec` / `setAudioCodec`; `setAudioProcessing` (echo cancel + noise suppressor).
+4. **Android camera controls**: white-balance lock; `tapToMeter` (exposure / WB).
+5. **Android multi-streaming**: `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` via `MultiCamera2` (aligned with iOS Dart API; WHIP/WHEP excluded).
+6. **Android sources**: `setVideoSource` (`camera2` / `cameraX` / `uvc` / `screen`), `requestScreenCapture`, `enableBufferAudio` / `feedPcmAudio` (StreamBase path for non-camera2).
+7. **Stats**: `StreamStatistics` adds `queueBytesOut`, `bytesOutPerSecond`, `queueCongestionPercent`, `totalBytesOut`.
+8. **Hardening**: dispose no longer double-completes MethodChannel; MediaProjection stopped on replace/dispose; GenericStream parity for retry/codecs/bitrate/BT.709; start-while-streaming restarts; pending cache for codecs/source/AEC.
+9. **Breaking**: `CameraValue.isStreamingVideoRtmp` renamed to `isStreaming` (covers all protocols). Empty Android `close()` stub removed.
+10. **WHEP**: still Android ❌ (RootEncoder has WHIP only).
+
 ## 2.0.1
 
 1. **Android**: Fix `Camera not initialized` when calling encoder settings after `initialize` but before `CameraPreview` mounts.
@@ -16,7 +29,7 @@
    - `setOverlayText` / `setOverlayImage` / `clearOverlay`.
    - iOS: when overlay is enabled, canvas / encoder size follows portrait or landscape (avoids stretched/shrunk preview).
 
-3. **Multi-streaming** (iOS only)
+3. **Multi-streaming** (iOS only; Android since **2.1.0**)
    - `startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming` (WHIP/WHEP not allowed).
    - Example defaults to one RTMP + one SRT destination.
 

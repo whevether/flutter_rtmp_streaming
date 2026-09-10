@@ -24,6 +24,7 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
     /// when the Flutter Engine is detached from the Activity
     private var methodCallHandler: MethodCallHandlerImplNew? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null
+    private var activityBinding: ActivityPluginBinding? = null
 
     override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         Log.v(TAG, "onAttachedToEngine $flutterPluginBinding")
@@ -54,8 +55,10 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
 
     override fun onDetachedFromActivity() {
         Log.v(TAG, "onDetachedFromActivity")
+        methodCallHandler?.activityBinding = null
         methodCallHandler?.stopListening()
         methodCallHandler = null
+        activityBinding = null
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
@@ -64,6 +67,7 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
         Log.v(TAG, "onAttachedToActivity $binding")
+        activityBinding = binding
         flutterPluginBinding?.apply {
             maybeStartListening(
                 binding.activity,
@@ -75,6 +79,7 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
                 },
                 platformViewRegistry
             )
+            methodCallHandler?.activityBinding = binding
         }
     }
 

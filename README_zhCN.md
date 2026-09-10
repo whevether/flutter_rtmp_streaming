@@ -20,8 +20,9 @@
 ---
 
 ## ⚙️ 技术基础
-- **Android**：基于 [`com.github.pedroSG94.RootEncoder:library:2.8.0`](https://github.com/pedroSG94/RootEncoder)  
+- **Android**：基于 [`com.github.pedroSG94.RootEncoder:library:2.8.1`](https://github.com/pedroSG94/RootEncoder)（含 `extra-sources`：CameraX / UVC）  
 - **iOS**：基于 [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)（含 `SRTHaishinKit`，以及用于 WHIP/WHEP alpha 的 `RTCHaishinKit`）  
+- **Android 构建**：AGP **9.4.0**、Gradle **9.7.1**、Kotlin DSL  
 
 通过这两个成熟的底层库，`rtmp_streaming` 提供了跨平台一致的 API 接口，简化了开发者的使用成本。
 
@@ -61,6 +62,7 @@
 - 🗑️ 销毁插件：`dispose`  
 - 📸 直播时截图：`takePicture`  
 - 🖼️ 叠字/水印：`setOverlayText` / `setOverlayImage` / `clearOverlay`  
+- 📡 多路推流：`startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP）  
 
 ---
 
@@ -74,7 +76,6 @@
 - ⚙️ 设置直播预设配置：`setSessionPreset`  
 - 🖼️ 设置直播屏幕宽高：`setScreenSettings`  
 - 🎞️ `setVideoSettings` 扩展参数：`expectedFrameRate`、`bitRateMode`（HaishinKit 2.2.1+ / 2.2.2+）、`profileLevel`  
-- 📡 多路推流：`startMultiStreaming` / `stopStreamingDestination` / `stopMultiStreaming`（不含 WHIP/WHEP）  
 
 ---
 
@@ -86,8 +87,18 @@
 - ❌ 移除滤镜：`removeFilter`  
 - 🎙️ 变调：`setPitchShift`（RootEncoder `PitchShiftEffect`；传 `1.0` 关闭）  
 - 🔒 曝光锁定：`lockExposure` / `unlockExposure` / `isExposureLocked`（须在预览或推流启动后）  
+- 🌡️ 白平衡锁定：`lockWhiteBalance` / `unlockWhiteBalance` / `isWhiteBalanceLocked`  
+- 👆 点击测光：`tapToMeter`（曝光或白平衡）  
+- 🎞️ 编解码器：`setVideoCodec` / `setAudioCodec`（H264/H265/AV1/VP8/VP9；AAC/HE-AAC/OPUS/G711）  
+- 🔇 回声消除 / 降噪：`setAudioProcessing`  
+- 📷 视频源：`setVideoSource`（`camera2` / `cameraX` / `uvc` / `screen`）  
+- 🖥️ 屏幕采集授权：`requestScreenCapture`（`VideoSourceType.screen` 前必调）  
+- 🎤 自定义 PCM：`enableBufferAudio` / `feedPcmAudio`  
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
 - 📶 RTMP Ping / RTT：`setRtmpShouldSendPings`（RootEncoder 2.7.0+，仅 RTMP）  
+- 📊 队列统计：`getStreamStatistics` 的 `queueBytesOut`、`bytesOutPerSecond`、`queueCongestionPercent`、`totalBytesOut`  
+
+> **WHEP** 在 Android 仍不支持（RootEncoder 仅推流；WHEP 请用 iOS）。  
 
 ---
 
@@ -256,15 +267,14 @@ await controller.startVideoStreaming(url);
 
 | 字段 | 说明 |
 |------|------|
-| `bitrate` | 当前视频码率 |
-| `fps` | 当前帧率 |
-| `width` / `height` | 流分辨率 |
+| `bitrate` / `fps` / `width` / `height` | 流指标 |
 | `cacheSize` | 发送缓存大小 |
 | `sentAudioFrames` / `sentVideoFrames` | 已发送帧数（Android） |
 | `droppedAudioFrames` / `droppedVideoFrames` | 丢弃帧数（Android） |
 | `isAudioMuted` / `isVideoMuted` | 是否静音（双端，1.0.8+） |
 | `rttMicros` | RTMP 往返时延（Android，需 `setRtmpShouldSendPings`） |
 | `bytesSend` | 已发送字节数 |
+| `queueBytesOut` / `bytesOutPerSecond` / `queueCongestionPercent` / `totalBytesOut` | 队列 / 吞吐（Android，RootEncoder 2.8.1+） |
 
 ```dart
 final stats = await controller.getStreamStatistics();
@@ -302,13 +312,17 @@ await controller.setOverlayText(
   colorArgb: 0xFFFF0000,
   position: OverlayPosition.topLeft,
 );
+await controller.setOverlayImage(
+  filePath: '/path/to/logo.png',
+  position: OverlayPosition.bottomRight,
+);
 await controller.clearOverlay();
 ```
 
 ---
 
 ### 多路推流：`startMultiStreaming`
-**仅 iOS**。不含 WHIP/WHEP。Example 默认一路 RTMP + 一路 SRT，可用 **Stop dest1 only** 只停一路。
+**Android + iOS**。不含 WHIP/WHEP。Example 默认一路 RTMP + 一路 SRT（`dest1` / `dest2`），可用 **Stop dest1 only** 只停一路。
 ```dart
 await controller.startMultiStreaming([
   StreamDestination(
@@ -322,6 +336,8 @@ await controller.startMultiStreaming([
     id: 'b',
   ),
 ]);
+await controller.stopStreamingDestination('a');
+await controller.stopMultiStreaming();
 ```
 
 ---
@@ -360,5 +376,5 @@ await controller.startVideoStreaming(url);
 ---
 
 ## 🚀 总结
-`rtmp_streaming` 为 Flutter 开发者提供跨平台、现代化的 RTMP 推流与视频录制能力。  
-自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；**2.0.1** 起 Android 可在 `CameraPreview` 挂载前安全设置编码参数（先缓存后应用）。iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 等扩展能力。
+`rtmp_streaming` 为 Flutter 开发者提供跨平台推流与视频录制能力。  
+自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；**2.0.1** 起 Android 可在 `CameraPreview` 挂载前安全设置编码参数（先缓存后应用）；**2.1.0** 起 Android 多路推流 / 编解码 / 视频源基于 RootEncoder 2.8.1，且 `CameraValue.isStreaming` 取代 `isStreamingVideoRtmp`。iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 与队列统计等扩展能力。

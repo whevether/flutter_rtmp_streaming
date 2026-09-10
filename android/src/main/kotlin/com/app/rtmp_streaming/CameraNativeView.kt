@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.hardware.camera2.CameraAccessException
 import android.media.MediaPlayer
 import android.os.Build
+import android.os.SystemClock
 import com.pedro.encoder.input.gl.render.filters.BaseFilterRender
 import android.util.Log
 import android.util.Size
@@ -56,10 +57,10 @@ import com.pedro.encoder.input.gl.render.filters.SharpnessFilterRender
 import com.pedro.encoder.input.gl.render.filters.SnowFilterRender
 import com.pedro.encoder.input.gl.render.filters.TemperatureFilterRender
 import com.pedro.encoder.input.gl.render.filters.ZebraFilterRender
-import com.pedro.encoder.input.gl.render.filters.`object`.GifObjectFilterRender
-import com.pedro.encoder.input.gl.render.filters.`object`.ImageObjectFilterRender
+import com.pedro.encoder.input.gl.render.filters.`object`.GifFilterRender
+import com.pedro.encoder.input.gl.render.filters.`object`.ImageFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.SurfaceFilterRender
-import com.pedro.encoder.input.gl.render.filters.`object`.TextObjectFilterRender
+import com.pedro.encoder.input.gl.render.filters.`object`.TextFilterRender
 import com.pedro.encoder.input.audio.NoAudioEffect
 import com.pedro.encoder.input.audio.PitchShiftEffect
 import com.pedro.encoder.input.sources.audio.MicrophoneSource
@@ -69,6 +70,7 @@ import com.pedro.encoder.input.video.CameraHelper.Facing.BACK
 import com.pedro.encoder.utils.gl.AspectRatioMode
 import com.pedro.encoder.utils.gl.TranslateTo
 import com.pedro.library.generic.GenericCamera2
+import com.pedro.library.generic.GenericStream
 import com.pedro.library.util.streamclient.GenericStreamClient
 import com.pedro.library.util.streamclient.RtmpStreamClient
 import com.pedro.library.util.streamclient.WhipStreamClient
@@ -76,7 +78,19 @@ import com.pedro.library.whip.WhipStream
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.platform.PlatformView
 import com.pedro.library.view.OpenGlView
-import com.pedro.library.util.BitrateAdapter
+import com.pedro.common.AudioCodec
+import com.pedro.common.StreamingStatsReport
+import com.pedro.common.VideoCodec
+import com.pedro.encoder.input.sources.audio.BufferAudioSource
+import com.pedro.encoder.input.sources.video.ScreenSource
+import com.pedro.extrasources.CameraUvcSource
+import com.pedro.extrasources.CameraXSource
+import com.pedro.library.multiple.MultiCamera2
+import com.pedro.library.multiple.MultiType
+import com.pedro.library.util.QueueAwareBitrateAdapter
+import android.content.Context
+import android.media.projection.MediaProjection
+import android.view.MotionEvent
 import java.io.*
 import java.util.Locale
 
@@ -99,7 +113,27 @@ class CameraNativeView(
     private var fps = 0
     private val aBitrate = 128 * 1000
     private val vBitrate = 1200 * 1000
-    private val bitrateAdapter: BitrateAdapter
+    private var queueBitrateAdapter: QueueAwareBitrateAdapter
+    private var lastStreamingStats: StreamingStatsReport? = null
+    private var videoCodec: VideoCodec = VideoCodec.H264
+    private var audioCodec: AudioCodec = AudioCodec.AAC
+    private var echoCanceler: Boolean = false
+    private var noiseSuppressor: Boolean = false
+    private var videoSourceMode: String = "camera2" // camera2|cameraX|uvc|screen
+    private var bufferAudioSource: BufferAudioSource? = null
+    private var useBufferAudio: Boolean = false
+    private var multiCamera: MultiCamera2? = null
+    /** StreamBase path for CameraX / UVC / screen / buffer-audio on RTMP/RTSP/SRT/UDP. */
+    private var genericStream: GenericStream? = null
+    private var multiDestinations: MutableList<MultiDest> = mutableListOf()
+    private var screenMediaProjection: MediaProjection? = null
+    data class MultiDest(
+        val id: String,
+        val url: String,
+        val protocol: String,
+        val type: MultiType,
+        val index: Int
+    )
   val spriteGestureController = SpriteGestureController()
     /** 当前已设置的滤镜实例，removeFilter 必须用同一实例才能生效 */
     private var currentFilter: BaseFilterRender? = null
@@ -134,15 +168,26 @@ class CameraNativeView(
         genericCamera = GenericCamera2(glView, this)
         genericCamera.streamClient.setReTries(10)
         genericCamera.setFpsListener { fps = it }
-        bitrateAdapter = BitrateAdapter {
-            genericCamera.setVideoBitrateOnFly(it)
-        }.apply {
-            setMaxBitrate(vBitrate + aBitrate)
+        queueBitrateAdapter = QueueAwareBitrateAdapter(vBitrate + aBitrate) { adapted ->
+            val audio = customAudioBitrate ?: aBitrate
+            val videoBitrate = (adapted - audio).coerceAtLeast(adapted / 10)
+            when {
+                whipStream?.isStreaming == true -> whipStream?.setVideoBitrateOnFly(videoBitrate)
+                multiCamera != null -> multiCamera?.setVideoBitrateOnFly(videoBitrate)
+                genericStream?.isStreaming == true -> genericStream?.setVideoBitrateOnFly(videoBitrate)
+                else -> genericCamera.setVideoBitrateOnFly(videoBitrate)
+            }
         }
     }
 
     private fun isStreamingNow(): Boolean =
-        whipStream?.isStreaming == true || genericCamera.isStreaming
+        whipStream?.isStreaming == true ||
+            multiCamera?.isStreaming == true ||
+            genericStream?.isStreaming == true ||
+            genericCamera.isStreaming
+
+    private fun needsStreamBasePath(): Boolean =
+        videoSourceMode != "camera2" || useBufferAudio
 
     private fun rtmpStreamClientOrNull(): RtmpStreamClient? {
         return try {
@@ -196,6 +241,13 @@ class CameraNativeView(
                 resumeStreamAfterSurfaceCreated = false
             }
         }
+        try {
+            if (multiCamera?.isOnPreview == true) {
+                multiCamera?.stopCamera()
+            }
+        } catch (e: Exception) {
+            Log.e("CameraNativeView", "stop multiCamera on surfaceDestroyed failed", e)
+        }
         if (genericCamera.isOnPreview) {
             try {
                 genericCamera.stopCamera()
@@ -220,17 +272,28 @@ class CameraNativeView(
     }
 
     override fun onNewBitrate(bitrate: Long) {
-        if (whipStream != null) {
-            return
-        }
-        bitrateAdapter.adaptBitrate(bitrate, genericCamera.getStreamClient().hasCongestion())
+        // ABR is driven by onStreamingStats + QueueAwareBitrateAdapter.
+    }
+
+    override fun onStreamingStats(report: StreamingStatsReport) {
+        lastStreamingStats = report
+        if (whipStream != null) return
+        queueBitrateAdapter.onStreamingStats(report)
     }
 
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     override fun onConnectionFailed(reason: String) {
         activity?.runOnUiThread {
-            val streamClient = whipStream?.getStreamClient() ?: genericCamera.streamClient
-            if (streamClient.reTry(5000, reason)) {
+            val streamClient = when {
+                whipStream != null -> whipStream?.getStreamClient()
+                multiCamera != null -> {
+                    val dest = multiDestinations.firstOrNull()
+                    if (dest != null) multiCamera?.getStreamClient(dest.type, dest.index) else null
+                }
+                genericStream != null -> genericStream?.getStreamClient()
+                else -> genericCamera.streamClient
+            }
+            if (streamClient != null && streamClient.reTry(5000, reason)) {
                 dartMessenger?.send(DartMessenger.EventType.RTMP_RETRY, reason)
             } else {
                 dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Failed retry")
@@ -259,15 +322,21 @@ class CameraNativeView(
     override fun onAuthSuccess() {
     }
 
+    private fun applyCodecsToGenericCamera() {
+        genericCamera.setVideoCodec(videoCodec)
+        genericCamera.setAudioCodec(audioCodec)
+    }
+
     private fun prepareAudioEncoder(): Boolean {
         if (!enableAudio) {
             return true
         }
         val bitrate = customAudioBitrate ?: aBitrate
-        return genericCamera.prepareAudio(bitrate, 32000, true)
+        return genericCamera.prepareAudio(bitrate, 32000, true, echoCanceler, noiseSuppressor)
     }
 
     private fun prepareVideoEncoder(size: Size, bitrate: Int): Boolean {
+        applyCodecsToGenericCamera()
         val fps = customVideoFps ?: 30
         val rotation = CameraHelper.getCameraOrientation(getActivity() ?: glView.context)
         return genericCamera.prepareVideo(size.width, size.height, fps, bitrate, rotation)
@@ -333,6 +402,12 @@ class CameraNativeView(
         frameRate: Int?,
         forceBt709Color: Boolean?,
         rtmpShouldSendPings: Boolean?,
+        videoCodec: String? = null,
+        audioCodec: String? = null,
+        echoCanceler: Boolean? = null,
+        noiseSuppressor: Boolean? = null,
+        videoSource: String? = null,
+        useBufferAudio: Boolean? = null,
     ) {
         if (audioBitrate != null) {
             customAudioBitrate = audioBitrate
@@ -357,6 +432,63 @@ class CameraNativeView(
         if (rtmpShouldSendPings != null) {
             this.rtmpShouldSendPings = rtmpShouldSendPings
         }
+        if (echoCanceler != null) {
+            this.echoCanceler = echoCanceler
+        }
+        if (noiseSuppressor != null) {
+            this.noiseSuppressor = noiseSuppressor
+        }
+        if (!videoSource.isNullOrBlank()) {
+            videoSourceMode = videoSource.lowercase(Locale.getDefault())
+        }
+        if (useBufferAudio != null) {
+            this.useBufferAudio = useBufferAudio
+            if (useBufferAudio && bufferAudioSource == null) {
+                bufferAudioSource = BufferAudioSource()
+            }
+            if (!useBufferAudio) {
+                bufferAudioSource = null
+            }
+        }
+        if (!videoCodec.isNullOrBlank()) {
+            parseVideoCodec(videoCodec)?.let {
+                this.videoCodec = it
+                try {
+                    genericCamera.setVideoCodec(it)
+                } catch (_: Exception) {
+                }
+            }
+        }
+        if (!audioCodec.isNullOrBlank()) {
+            parseAudioCodec(audioCodec)?.let {
+                this.audioCodec = it
+                try {
+                    genericCamera.setAudioCodec(it)
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    private fun parseVideoCodec(name: String): VideoCodec? {
+        return when (name.lowercase(Locale.getDefault())) {
+            "h264", "avc" -> VideoCodec.H264
+            "h265", "hevc" -> VideoCodec.H265
+            "av1" -> VideoCodec.AV1
+            "vp8" -> VideoCodec.VP8
+            "vp9" -> VideoCodec.VP9
+            else -> null
+        }
+    }
+
+    private fun parseAudioCodec(name: String): AudioCodec? {
+        return when (name.lowercase(Locale.getDefault()).replace('-', '_')) {
+            "aac" -> AudioCodec.AAC
+            "he_aac", "heaac" -> AudioCodec.HE_AAC
+            "opus" -> AudioCodec.OPUS
+            "g711", "g711_alaw", "alaw" -> AudioCodec.G711
+            else -> null
+        }
     }
 
     fun setAudioSettings(bitrate: Int?, result: MethodChannel.Result) {
@@ -378,10 +510,11 @@ class CameraNativeView(
         try {
             if (bitrate != null) {
                 customVideoBitrate = bitrate
-                if (whipStream?.isStreaming == true) {
-                    whipStream?.setVideoBitrateOnFly(bitrate)
-                } else if (genericCamera.isStreaming) {
-                    genericCamera.setVideoBitrateOnFly(bitrate)
+                when {
+                    whipStream?.isStreaming == true -> whipStream?.setVideoBitrateOnFly(bitrate)
+                    multiCamera?.isStreaming == true -> multiCamera?.setVideoBitrateOnFly(bitrate)
+                    genericStream?.isStreaming == true -> genericStream?.setVideoBitrateOnFly(bitrate)
+                    genericCamera.isStreaming -> genericCamera.setVideoBitrateOnFly(bitrate)
                 }
             }
             if (frameInterval != null) {
@@ -409,10 +542,6 @@ class CameraNativeView(
         } catch (e: Exception) {
             result.error("setFrameRate", e.message, null)
         }
-    }
-
-    fun close() {
-        Log.d("CameraNativeView", "close")
     }
 
     fun takePicture(filePath: String, result: MethodChannel.Result) {
@@ -509,9 +638,8 @@ class CameraNativeView(
 
         try {
             if (isStreamingNow()) {
-                stopActiveStream()
-                result.success(null)
-                return
+                // Restart: stop current session then start the new URL.
+                stopActiveStream(restorePreview = false)
             }
             currentProtocol = proto
             lastStreamUrl = url
@@ -534,6 +662,10 @@ class CameraNativeView(
     }
 
     private fun startGenericStreaming(url: String, bitrate: Int?, result: MethodChannel.Result) {
+        if (needsStreamBasePath()) {
+            startGenericStreamBaseStreaming(url, bitrate, result)
+            return
+        }
         val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
         val size = streamingSize["size"] as Size
         val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
@@ -548,6 +680,106 @@ class CameraNativeView(
                 "Error preparing stream, This device cant do it",
                 null
             )
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    private fun startGenericStreamBaseStreaming(
+        url: String,
+        bitrate: Int?,
+        result: MethodChannel.Result
+    ) {
+        val ctx = getActivity() ?: glView.context
+        if (genericCamera.isOnPreview) {
+            try {
+                genericCamera.stopCamera()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stopCamera before GenericStream failed", e)
+            }
+        }
+        stopGenericStreamInternal(restorePreview = false)
+
+        val stream = GenericStream(ctx, this)
+        stream.getStreamClient().setReTries(10)
+        stream.setVideoCodec(videoCodec)
+        stream.setAudioCodec(audioCodec)
+
+        val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
+        val size = streamingSize["size"] as Size
+        val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
+        val fpsValue = customVideoFps ?: 30
+        val rotation = CameraHelper.getCameraOrientation(ctx)
+        val audioOk = if (!enableAudio) {
+            true
+        } else {
+            val ab = customAudioBitrate ?: aBitrate
+            stream.prepareAudio(
+                sampleRate = 32000,
+                isStereo = true,
+                bitrate = ab,
+                echoCanceler = echoCanceler,
+                noiseSuppressor = noiseSuppressor
+            )
+        }
+        val videoOk = stream.prepareVideo(
+            size.width, size.height, bitrateRes, fpsValue, 2, rotation
+        )
+        if (!audioOk || !videoOk) {
+            result.error(
+                "videoStreamingFailed",
+                "Error preparing stream (StreamBase), This device cant do it",
+                null
+            )
+            return
+        }
+        try {
+            applyPreferredVideoSourceToStreamBase(stream, ctx)
+        } catch (e: Exception) {
+            result.error("videoStreamingFailed", e.message, null)
+            return
+        }
+        if (useBufferAudio) {
+            val buf = bufferAudioSource ?: BufferAudioSource().also { bufferAudioSource = it }
+            try {
+                stream.changeAudioSource(buf)
+            } catch (e: Exception) {
+                result.error("videoStreamingFailed", e.message, null)
+                return
+            }
+        }
+        try {
+            stream.forceBt709Color(forceBt709Color)
+        } catch (_: Exception) {
+        }
+        stream.setFpsListener { fps = it }
+        stream.startPreview(glView)
+        // RTMP pings via GenericStreamClient reflection if needed
+        if (currentProtocol == "rtmp" && rtmpShouldSendPings) {
+            try {
+                val field = GenericStreamClient::class.java.getDeclaredField("rtmpClient")
+                field.isAccessible = true
+                (field.get(stream.getStreamClient()) as? RtmpStreamClient)
+                    ?.shouldSendPings(true)
+            } catch (_: Exception) {
+            }
+        }
+        stream.startStream(url)
+        genericStream = stream
+        result.success(null)
+    }
+
+    private fun stopGenericStreamInternal(restorePreview: Boolean) {
+        genericStream?.let { stream ->
+            try {
+                if (stream.isStreaming) stream.stopStream()
+                if (stream.isOnPreview) stream.stopPreview()
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stop GenericStream failed", e)
+            }
+            genericStream = null
+            if (restorePreview && isSurfaceCreated) {
+                startPreview(cameraName)
+            }
         }
     }
 
@@ -583,6 +815,9 @@ class CameraNativeView(
                 ?: stream.getStreamClient().setAuthorization(whipToken, null)
         }
 
+        stream.setVideoCodec(videoCodec)
+        stream.setAudioCodec(audioCodec)
+
         val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
         val size = streamingSize["size"] as Size
         val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
@@ -592,7 +827,13 @@ class CameraNativeView(
             true
         } else {
             val ab = customAudioBitrate ?: aBitrate
-            stream.prepareAudio(sampleRate = 32000, isStereo = true, bitrate = ab)
+            stream.prepareAudio(
+                sampleRate = 32000,
+                isStereo = true,
+                bitrate = ab,
+                echoCanceler = echoCanceler,
+                noiseSuppressor = noiseSuppressor
+            )
         }
         val videoOk = stream.prepareVideo(
             size.width, size.height, bitrateRes, fpsValue, 2, rotation
@@ -605,6 +846,26 @@ class CameraNativeView(
             )
             return
         }
+        // changeVideoSource / changeAudioSource must run after prepare*.
+        try {
+            applyPreferredVideoSourceToWhip(stream, ctx)
+        } catch (e: Exception) {
+            result.error("videoStreamingFailed", e.message, null)
+            return
+        }
+        if (useBufferAudio) {
+            val buf = bufferAudioSource ?: BufferAudioSource().also { bufferAudioSource = it }
+            try {
+                stream.changeAudioSource(buf)
+            } catch (e: Exception) {
+                result.error("videoStreamingFailed", e.message, null)
+                return
+            }
+        }
+        try {
+            stream.forceBt709Color(forceBt709Color)
+        } catch (_: Exception) {
+        }
         stream.setFpsListener { fps = it }
         stream.startPreview(glView)
         stream.startStream(url)
@@ -613,6 +874,12 @@ class CameraNativeView(
     }
 
     private fun stopActiveStream(restorePreview: Boolean = true) {
+        val hadMulti = multiCamera != null
+        stopMultiStreamingInternal(restorePreview = false)
+        if (genericStream != null) {
+            stopGenericStreamInternal(restorePreview = restorePreview)
+            return
+        }
         whipStream?.let { stream ->
             try {
                 if (stream.isStreaming) stream.stopStream()
@@ -621,7 +888,6 @@ class CameraNativeView(
                 Log.e("CameraNativeView", "stop WHIP stream failed", e)
             }
             whipStream = null
-            // Restore GenericCamera2 preview after WHIP ends.
             if (restorePreview && isSurfaceCreated) {
                 startPreview(cameraName)
             }
@@ -629,6 +895,33 @@ class CameraNativeView(
         }
         if (genericCamera.isStreaming) {
             genericCamera.stopStream()
+        }
+        if (hadMulti && restorePreview && isSurfaceCreated) {
+            startPreview(cameraName)
+        }
+    }
+
+    private fun stopMultiStreamingInternal(restorePreview: Boolean = true) {
+        val mc = multiCamera ?: return
+        for (dest in multiDestinations.toList()) {
+            try {
+                mc.stopStream(dest.type, dest.index)
+            } catch (e: Exception) {
+                Log.e("CameraNativeView", "stop multi dest ${dest.id} failed", e)
+            }
+        }
+        try {
+            if (mc.isOnPreview) {
+                mc.stopCamera()
+            }
+        } catch (e: Exception) {
+            Log.e("CameraNativeView", "stop multi camera preview failed", e)
+        }
+        multiCamera = null
+        multiDestinations.clear()
+        lastStreamingStats = null
+        if (restorePreview && isSurfaceCreated && whipStream == null) {
+            startPreview(cameraName)
         }
     }
 
@@ -913,12 +1206,12 @@ class CameraNativeView(
               }
               val file = File(filePath)
               val inputStream = FileInputStream(file)
-              val gifObjectFilterRender = GifObjectFilterRender()
+              val gifObjectFilterRender = GifFilterRender()
               gifObjectFilterRender.setGif(inputStream)
               genericCamera.glInterface?.setFilter(gifObjectFilterRender)
               gifObjectFilterRender.setScale(50f, 50f)
               gifObjectFilterRender.setPosition(TranslateTo.BOTTOM)
-              spriteGestureController.setBaseObjectFilterRender(gifObjectFilterRender)
+              spriteGestureController.setSprite(gifObjectFilterRender.sprite)
               currentFilter = gifObjectFilterRender
               currentFilterType = type
               result.success(null)
@@ -942,14 +1235,14 @@ class CameraNativeView(
                 result.error("setFilter", "filePath Not Empty", null)
                 return
               }
-              val imageObjectFilterRender = ImageObjectFilterRender()
+              val imageObjectFilterRender = ImageFilterRender()
               genericCamera.glInterface?.setFilter(imageObjectFilterRender)
               imageObjectFilterRender.setImage(
                 BitmapFactory.decodeFile(filePath)
               )
               imageObjectFilterRender.setScale(50f, 50f)
               imageObjectFilterRender.setPosition(TranslateTo.RIGHT)
-              spriteGestureController.setBaseObjectFilterRender(imageObjectFilterRender) //Optional
+              spriteGestureController.setSprite(imageObjectFilterRender.sprite) //Optional
               spriteGestureController.setPreventMoveOutside(false)
               currentFilter = imageObjectFilterRender
               currentFilterType = type
@@ -1076,7 +1369,7 @@ class CameraNativeView(
                 }
               genericCamera.glInterface?.setFilter(surfaceFilterRender)
               surfaceFilterRender.setScale(50f, 33.3f)
-              spriteGestureController.setBaseObjectFilterRender(surfaceFilterRender)
+              spriteGestureController.setSprite(surfaceFilterRender.sprite)
               currentFilter = surfaceFilterRender
               currentFilterType = type
               result.success(null)
@@ -1089,12 +1382,12 @@ class CameraNativeView(
               result.success(null)
             }
             41 -> {
-              val textObjectFilterRender = TextObjectFilterRender()
+              val textObjectFilterRender = TextFilterRender()
               genericCamera.glInterface?.setFilter(textObjectFilterRender)
               textObjectFilterRender.setText("Hello world", 22f, Color.RED)
               textObjectFilterRender.setScale(50f, 50f)
               textObjectFilterRender.setPosition(TranslateTo.CENTER)
-              spriteGestureController.setBaseObjectFilterRender(textObjectFilterRender) //Optional
+              spriteGestureController.setSprite(textObjectFilterRender.sprite) //Optional
               currentFilter = textObjectFilterRender
               currentFilterType = type
               result.success(null)
@@ -1246,7 +1539,12 @@ class CameraNativeView(
             genericCamera.startPreview(targetCamera, size.width, size.height)
             true
         } catch (e: CameraAccessException) {
-            close()
+            if (genericCamera.isOnPreview) {
+                try {
+                    genericCamera.stopCamera()
+                } catch (_: Exception) {
+                }
+            }
             getActivity()?.runOnUiThread {
                 dartMessenger?.send(
                     DartMessenger.EventType.ERROR,
@@ -1345,7 +1643,9 @@ class CameraNativeView(
 
     fun getStreamStatistics(result: MethodChannel.Result) {
         val ret = hashMapOf<String, Any>()
+        val stats = lastStreamingStats
         val whip = whipStream
+        val multi = multiCamera
         if (whip != null) {
             val client = whip.getStreamClient()
             ret["cacheSize"] = client.getCacheSize()
@@ -1361,13 +1661,58 @@ class CameraNativeView(
             ret["height"] = 0
             ret["fps"] = fps
             ret["rttMicros"] = 0
+            ret["queueBytesOut"] = stats?.queueBytesOut ?: client.getQueueBytesOut()
+            ret["bytesOutPerSecond"] = stats?.bytesOutPerSecond ?: 0L
+            ret["queueCongestionPercent"] = stats?.queueCongestionPercent ?: 0f
+            ret["totalBytesOut"] = stats?.totalBytesOut ?: 0L
+        } else if (multi != null && multiDestinations.isNotEmpty()) {
+            val dest = multiDestinations.first()
+            val client = multi.getStreamClient(dest.type, dest.index)
+            ret["cacheSize"] = client.getCacheSize()
+            ret["sentAudioFrames"] = client.getSentAudioFrames()
+            ret["sentVideoFrames"] = client.getSentVideoFrames()
+            ret["droppedAudioFrames"] = client.getDroppedAudioFrames()
+            ret["droppedVideoFrames"] = client.getDroppedVideoFrames()
+            ret["bytesSend"] = client.getBytesSend()
+            ret["isAudioMuted"] = multi.isAudioMuted
+            ret["isVideoMuted"] = multi.glInterface?.isVideoMuted ?: false
+            ret["bitrate"] = multi.bitrate
+            ret["width"] = multi.streamWidth
+            ret["height"] = multi.streamHeight
+            ret["fps"] = fps
+            ret["rttMicros"] = 0
+            ret["queueBytesOut"] = stats?.queueBytesOut ?: client.getQueueBytesOut()
+            ret["bytesOutPerSecond"] = stats?.bytesOutPerSecond ?: 0L
+            ret["queueCongestionPercent"] = stats?.queueCongestionPercent ?: 0f
+            ret["totalBytesOut"] = stats?.totalBytesOut ?: 0L
+        } else if (genericStream != null) {
+            val stream = genericStream!!
+            val client = stream.getStreamClient()
+            ret["cacheSize"] = client.getCacheSize()
+            ret["sentAudioFrames"] = client.getSentAudioFrames()
+            ret["sentVideoFrames"] = client.getSentVideoFrames()
+            ret["droppedAudioFrames"] = client.getDroppedAudioFrames()
+            ret["droppedVideoFrames"] = client.getDroppedVideoFrames()
+            ret["bytesSend"] = client.getBytesSend()
+            ret["isAudioMuted"] = false
+            ret["isVideoMuted"] = false
+            ret["bitrate"] = customVideoBitrate ?: (lastStreamBitrate ?: vBitrate)
+            ret["width"] = 0
+            ret["height"] = 0
+            ret["fps"] = fps
+            ret["rttMicros"] = 0
+            ret["queueBytesOut"] = stats?.queueBytesOut ?: client.getQueueBytesOut()
+            ret["bytesOutPerSecond"] = stats?.bytesOutPerSecond ?: 0L
+            ret["queueCongestionPercent"] = stats?.queueCongestionPercent ?: 0f
+            ret["totalBytesOut"] = stats?.totalBytesOut ?: 0L
         } else {
-            ret["cacheSize"] = genericCamera.streamClient.getCacheSize()
-            ret["sentAudioFrames"] = genericCamera.streamClient.getSentAudioFrames()
-            ret["sentVideoFrames"] = genericCamera.streamClient.getSentVideoFrames()
-            ret["droppedAudioFrames"] = genericCamera.streamClient.getDroppedAudioFrames()
-            ret["droppedVideoFrames"] = genericCamera.streamClient.getDroppedVideoFrames()
-            ret["bytesSend"] = genericCamera.streamClient.getBytesSend()
+            val client = genericCamera.streamClient
+            ret["cacheSize"] = client.getCacheSize()
+            ret["sentAudioFrames"] = client.getSentAudioFrames()
+            ret["sentVideoFrames"] = client.getSentVideoFrames()
+            ret["droppedAudioFrames"] = client.getDroppedAudioFrames()
+            ret["droppedVideoFrames"] = client.getDroppedVideoFrames()
+            ret["bytesSend"] = client.getBytesSend()
             ret["isAudioMuted"] = genericCamera.isAudioMuted
             ret["isVideoMuted"] = genericCamera.glInterface?.isVideoMuted ?: false
             ret["bitrate"] = genericCamera.bitrate
@@ -1379,6 +1724,10 @@ class CameraNativeView(
             } else {
                 0
             }
+            ret["queueBytesOut"] = stats?.queueBytesOut ?: client.getQueueBytesOut()
+            ret["bytesOutPerSecond"] = stats?.bytesOutPerSecond ?: 0L
+            ret["queueCongestionPercent"] = stats?.queueCongestionPercent ?: 0f
+            ret["totalBytesOut"] = stats?.totalBytesOut ?: 0L
         }
         result.success(ret)
     }
@@ -1399,6 +1748,26 @@ class CameraNativeView(
         spriteGestureController.stopListener()
     }
 
+    private fun applyNaturalObjectScale(
+        render: com.pedro.encoder.input.gl.render.filters.`object`.BaseObjectFilterRender,
+        streamW: Int,
+        streamH: Int
+    ) {
+        try {
+            val field = com.pedro.encoder.input.gl.render.filters.`object`.BaseObjectFilterRender::class.java
+                .getDeclaredField("streamObject")
+            field.isAccessible = true
+            val obj = field.get(render) as? com.pedro.encoder.utils.gl.StreamObjectBase ?: return
+            val w = obj.width
+            val h = obj.height
+            if (w > 0 && h > 0 && streamW > 0 && streamH > 0) {
+                render.setScale(w * 100f / streamW, h * 100f / streamH)
+            }
+        } catch (_: Exception) {
+            render.setScale(50f, 50f)
+        }
+    }
+
     fun setOverlayText(
         text: String?,
         fontSize: Double?,
@@ -1413,7 +1782,7 @@ class CameraNativeView(
         }
         try {
             clearOverlayInternal()
-            val render = TextObjectFilterRender()
+            val render = TextFilterRender()
             val color = colorArgb ?: Color.RED
             // Paint size in bitmap pixels; larger = sharper when mapped 1:1 via setDefaultScale.
             val density = activity?.resources?.displayMetrics?.density ?: 1f
@@ -1427,7 +1796,7 @@ class CameraNativeView(
                 ?: encoder?.y?.takeIf { it > 0 }
                 ?: 720
             // Natural pixel mapping so fontSize controls on-screen size (avoids 50% upscale blur).
-            render.setDefaultScale(streamW, streamH)
+            applyNaturalObjectScale(render, streamW, streamH)
             val scaleFactor = ((scale ?: 100.0) / 100.0).toFloat().coerceIn(0.1f, 4f)
             if (kotlin.math.abs(scaleFactor - 1f) > 0.01f) {
                 val current = render.scale
@@ -1435,7 +1804,7 @@ class CameraNativeView(
             }
             render.setPosition(translateTo(position))
             genericCamera.glInterface?.setFilter(render)
-            spriteGestureController.setBaseObjectFilterRender(render)
+            spriteGestureController.setSprite(render.sprite)
             overlayFilter = render
             result.success(null)
         } catch (e: Exception) {
@@ -1460,7 +1829,7 @@ class CameraNativeView(
                 result.error("setOverlayImage", "Failed to decode image", null)
                 return
             }
-            val render = ImageObjectFilterRender()
+            val render = ImageFilterRender()
             render.setImage(bitmap)
             val encoder = genericCamera.glInterface?.encoderSize
             val streamW = genericCamera.streamWidth.takeIf { it > 0 }
@@ -1469,7 +1838,7 @@ class CameraNativeView(
             val streamH = genericCamera.streamHeight.takeIf { it > 0 }
                 ?: encoder?.y?.takeIf { it > 0 }
                 ?: 720
-            render.setDefaultScale(streamW, streamH)
+            applyNaturalObjectScale(render, streamW, streamH)
             val scaleFactor = ((scale ?: 100.0) / 100.0).toFloat().coerceIn(0.1f, 4f)
             if (kotlin.math.abs(scaleFactor - 1f) > 0.01f) {
                 val current = render.scale
@@ -1477,7 +1846,7 @@ class CameraNativeView(
             }
             render.setPosition(translateTo(position))
             genericCamera.glInterface?.setFilter(render)
-            spriteGestureController.setBaseObjectFilterRender(render)
+            spriteGestureController.setSprite(render.sprite)
             overlayFilter = render
             result.success(null)
         } catch (e: Exception) {
@@ -1593,6 +1962,9 @@ class CameraNativeView(
         forceBt709Color = enabled
         try {
             genericCamera.forceBt709Color(enabled)
+            whipStream?.forceBt709Color(enabled)
+            genericStream?.forceBt709Color(enabled)
+            multiCamera?.forceBt709Color(enabled)
             result.success(null)
         } catch (e: Exception) {
             result.error("setForceBt709Color", e.message, null)
@@ -1606,6 +1978,469 @@ class CameraNativeView(
         }
         rtmpShouldSendPings = enabled
         result.success(null)
+    }
+
+    fun setVideoCodec(name: String?, result: MethodChannel.Result) {
+        if (name.isNullOrBlank()) {
+            result.error("setVideoCodec", "name is required", null)
+            return
+        }
+        val codec = parseVideoCodec(name)
+        if (codec == null) {
+            result.error("setVideoCodec", "Unsupported video codec: $name", null)
+            return
+        }
+        videoCodec = codec
+        try {
+            whipStream?.setVideoCodec(codec)
+            multiCamera?.setVideoCodec(codec)
+            genericStream?.setVideoCodec(codec)
+            genericCamera.setVideoCodec(codec)
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setVideoCodec", e.message, null)
+        }
+    }
+
+    fun setAudioCodec(name: String?, result: MethodChannel.Result) {
+        if (name.isNullOrBlank()) {
+            result.error("setAudioCodec", "name is required", null)
+            return
+        }
+        val codec = parseAudioCodec(name)
+        if (codec == null) {
+            result.error("setAudioCodec", "Unsupported audio codec: $name", null)
+            return
+        }
+        audioCodec = codec
+        try {
+            whipStream?.setAudioCodec(codec)
+            multiCamera?.setAudioCodec(codec)
+            genericStream?.setAudioCodec(codec)
+            genericCamera.setAudioCodec(codec)
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("setAudioCodec", e.message, null)
+        }
+    }
+
+    fun setAudioProcessing(
+        echoCanceler: Boolean?,
+        noiseSuppressor: Boolean?,
+        result: MethodChannel.Result
+    ) {
+        if (echoCanceler != null) {
+            this.echoCanceler = echoCanceler
+        }
+        if (noiseSuppressor != null) {
+            this.noiseSuppressor = noiseSuppressor
+        }
+        result.success(null)
+    }
+
+    fun lockWhiteBalance(result: MethodChannel.Result) {
+        try {
+            result.success(enableWhiteBalanceLockOnActiveCamera())
+        } catch (e: Exception) {
+            result.error("lockWhiteBalance", e.message, null)
+        }
+    }
+
+    fun unlockWhiteBalance(result: MethodChannel.Result) {
+        try {
+            disableWhiteBalanceLockOnActiveCamera()
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("unlockWhiteBalance", e.message, null)
+        }
+    }
+
+    fun isWhiteBalanceLocked(result: MethodChannel.Result) {
+        try {
+            result.success(isWhiteBalanceLockEnabledOnActiveCamera())
+        } catch (e: Exception) {
+            result.error("isWhiteBalanceLocked", e.message, null)
+        }
+    }
+
+    private fun enableWhiteBalanceLockOnActiveCamera(): Boolean {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+            return camera2?.enableWhiteBalanceLock()
+                ?: throw IllegalStateException("White balance lock is not available for the current WHIP video source.")
+        }
+        return genericCamera.enableWhiteBalanceLock()
+    }
+
+    private fun disableWhiteBalanceLockOnActiveCamera() {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+                ?: throw IllegalStateException("White balance unlock is not available for the current WHIP video source.")
+            camera2.disableWhiteBalanceLock()
+            return
+        }
+        genericCamera.disableWhiteBalanceLock()
+    }
+
+    private fun isWhiteBalanceLockEnabledOnActiveCamera(): Boolean {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+            return camera2?.isWhiteBalanceLockEnabled() ?: false
+        }
+        return genericCamera.isWhiteBalanceLockEnabled
+    }
+
+    fun tapToMeter(
+        x: Double?,
+        y: Double?,
+        mode: String?,
+        result: MethodChannel.Result
+    ) {
+        try {
+            val nx = (x ?: 0.5).coerceIn(0.0, 1.0)
+            val ny = (y ?: 0.5).coerceIn(0.0, 1.0)
+            val view = glView
+            val px = (nx * view.width).toFloat()
+            val py = (ny * view.height).toFloat()
+            val now = SystemClock.uptimeMillis()
+            val event = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, px, py, 0)
+            val meterMode = (mode ?: "exposure").lowercase(Locale.getDefault())
+            val ok = try {
+                when (meterMode) {
+                    "whitebalance", "wb", "white_balance" ->
+                        tapToMeterWhiteBalanceOnActiveCamera(view, event)
+                    else ->
+                        tapToMeterExposureOnActiveCamera(view, event)
+                }
+            } finally {
+                event.recycle()
+            }
+            result.success(ok)
+        } catch (e: Exception) {
+            result.error("tapToMeter", e.message, null)
+        }
+    }
+
+    private fun tapToMeterExposureOnActiveCamera(view: View, event: MotionEvent): Boolean {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+            return camera2?.tapToMeterExposure(view, event)
+                ?: throw IllegalStateException("tapToMeterExposure is not available for the current WHIP video source.")
+        }
+        return genericCamera.tapToMeterExposure(view, event)
+    }
+
+    private fun tapToMeterWhiteBalanceOnActiveCamera(view: View, event: MotionEvent): Boolean {
+        val whip = whipStream
+        if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+            val camera2 = whip.videoSource as? Camera2Source
+            return camera2?.tapToMeterWhiteBalance(view, event)
+                ?: throw IllegalStateException("tapToMeterWhiteBalance is not available for the current WHIP video source.")
+        }
+        return genericCamera.tapToMeterWhiteBalance(view, event)
+    }
+
+    fun setVideoSource(mode: String?, result: MethodChannel.Result) {
+        if (mode.isNullOrBlank()) {
+            result.error("setVideoSource", "mode is required", null)
+            return
+        }
+        val normalized = mode.lowercase(Locale.getDefault())
+        when (normalized) {
+            "camera2", "camerax", "uvc", "screen" -> {
+                videoSourceMode = normalized
+                val ctx = getActivity() ?: glView.context
+                try {
+                    val whip = whipStream
+                    if (whip != null && (whip.isStreaming || whip.isOnPreview)) {
+                        applyPreferredVideoSourceToWhip(whip, ctx)
+                        result.success(null)
+                        return
+                    }
+                    val gs = genericStream
+                    if (gs != null && (gs.isStreaming || gs.isOnPreview)) {
+                        applyPreferredVideoSourceToStreamBase(gs, ctx)
+                        result.success(null)
+                        return
+                    }
+                    // Applied on next startVideoStreaming via GenericStream path when needed.
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("setVideoSource", e.message, null)
+                }
+            }
+            else -> result.error(
+                "setVideoSource",
+                "Unsupported mode: $mode (expected camera2|cameraX|uvc|screen)",
+                null
+            )
+        }
+    }
+
+    private fun applyPreferredVideoSource(
+        changeVideoSource: (com.pedro.encoder.input.sources.video.VideoSource) -> Unit,
+        currentSource: com.pedro.encoder.input.sources.video.VideoSource?,
+        ctx: Context
+    ) {
+        when (videoSourceMode) {
+            "camerax" -> changeVideoSource(CameraXSource(ctx))
+            "uvc" -> changeVideoSource(CameraUvcSource())
+            "screen" -> {
+                val projection = screenMediaProjection
+                    ?: throw IllegalStateException(
+                        "Screen source requires MediaProjection; call requestScreenCapture first."
+                    )
+                changeVideoSource(ScreenSource(ctx, projection))
+            }
+            else -> {
+                if (currentSource !is Camera2Source) {
+                    changeVideoSource(Camera2Source(ctx))
+                }
+            }
+        }
+    }
+
+    private fun applyPreferredVideoSourceToStreamBase(stream: GenericStream, ctx: Context) {
+        applyPreferredVideoSource(stream::changeVideoSource, stream.videoSource, ctx)
+    }
+
+    private fun applyPreferredVideoSourceToWhip(stream: WhipStream, ctx: Context) {
+        applyPreferredVideoSource(stream::changeVideoSource, stream.videoSource, ctx)
+    }
+
+    fun attachScreenMediaProjection(projection: MediaProjection?, result: MethodChannel.Result) {
+        releaseScreenMediaProjection()
+        screenMediaProjection = projection
+        result.success(null)
+    }
+
+    private fun releaseScreenMediaProjection() {
+        try {
+            screenMediaProjection?.stop()
+        } catch (e: Exception) {
+            Log.w("CameraNativeView", "MediaProjection.stop failed", e)
+        }
+        screenMediaProjection = null
+    }
+
+    fun enableBufferAudio(enable: Boolean?, result: MethodChannel.Result) {
+        if (enable == null) {
+            result.error("enableBufferAudio", "enable is required", null)
+            return
+        }
+        useBufferAudio = enable
+        try {
+            if (enable) {
+                val src = bufferAudioSource ?: BufferAudioSource().also { bufferAudioSource = it }
+                whipStream?.changeAudioSource(src)
+                genericStream?.changeAudioSource(src)
+            } else {
+                bufferAudioSource = null
+                whipStream?.changeAudioSource(MicrophoneSource())
+                genericStream?.changeAudioSource(MicrophoneSource())
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("enableBufferAudio", e.message, null)
+        }
+    }
+
+    fun feedPcmAudio(bytes: ByteArray?, result: MethodChannel.Result) {
+        if (bytes == null) {
+            result.error("feedPcmAudio", "bytes is required", null)
+            return
+        }
+        val src = bufferAudioSource
+        if (!useBufferAudio || src == null) {
+            result.error("feedPcmAudio", "Buffer audio is not enabled", null)
+            return
+        }
+        try {
+            src.setBuffer(bytes)
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("feedPcmAudio", e.message, null)
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
+    fun startMultiStreaming(
+        destinations: List<Map<String, Any?>>?,
+        bitrate: Int?,
+        result: MethodChannel.Result
+    ) {
+        if (destinations.isNullOrEmpty()) {
+            result.error("startMultiStreaming", "destinations is required", null)
+            return
+        }
+        try {
+            if (isStreamingNow() || multiCamera != null) {
+                stopActiveStream(restorePreview = false)
+            }
+            if (genericCamera.isOnPreview) {
+                try {
+                    genericCamera.stopCamera()
+                } catch (e: Exception) {
+                    Log.e("CameraNativeView", "stopCamera before multi failed", e)
+                }
+            }
+
+            val rtmpCheckers = mutableListOf<ConnectChecker>()
+            val rtspCheckers = mutableListOf<ConnectChecker>()
+            val srtCheckers = mutableListOf<ConnectChecker>()
+            val udpCheckers = mutableListOf<ConnectChecker>()
+            val built = mutableListOf<MultiDest>()
+
+            destinations.forEachIndexed { i, dest ->
+                val url = dest["url"] as? String
+                if (url.isNullOrBlank()) {
+                    result.error("startMultiStreaming", "destination[$i].url is required", null)
+                    return
+                }
+                val protocol = ((dest["protocol"] as? String) ?: "rtmp").lowercase(Locale.getDefault())
+                validateProtocolAndUrl(protocol, url)?.let {
+                    result.error("startMultiStreaming", it, null)
+                    return
+                }
+                if (protocol == "whip" || protocol == "whep") {
+                    result.error(
+                        "startMultiStreaming",
+                        "WHIP/WHEP are not supported in multi-streaming",
+                        null
+                    )
+                    return
+                }
+                val id = (dest["id"] as? String)?.takeIf { it.isNotBlank() } ?: "dest_$i"
+                val type = when (protocol) {
+                    "rtmp" -> MultiType.RTMP
+                    "rtsp" -> MultiType.RTSP
+                    "srt" -> MultiType.SRT
+                    "udp" -> MultiType.UDP
+                    else -> {
+                        result.error("startMultiStreaming", "Unsupported protocol: $protocol", null)
+                        return
+                    }
+                }
+                val index = when (type) {
+                    MultiType.RTMP -> {
+                        val idx = rtmpCheckers.size
+                        rtmpCheckers.add(this)
+                        idx
+                    }
+                    MultiType.RTSP -> {
+                        val idx = rtspCheckers.size
+                        rtspCheckers.add(this)
+                        idx
+                    }
+                    MultiType.SRT -> {
+                        val idx = srtCheckers.size
+                        srtCheckers.add(this)
+                        idx
+                    }
+                    MultiType.UDP -> {
+                        val idx = udpCheckers.size
+                        udpCheckers.add(this)
+                        idx
+                    }
+                }
+                built.add(MultiDest(id, url, protocol, type, index))
+            }
+
+            val mc = MultiCamera2(
+                glView,
+                rtmpCheckers.takeIf { it.isNotEmpty() }?.toTypedArray(),
+                rtspCheckers.takeIf { it.isNotEmpty() }?.toTypedArray(),
+                srtCheckers.takeIf { it.isNotEmpty() }?.toTypedArray(),
+                udpCheckers.takeIf { it.isNotEmpty() }?.toTypedArray()
+            )
+            mc.setVideoCodec(videoCodec)
+            mc.setAudioCodec(audioCodec)
+            mc.forceBt709Color(forceBt709Color)
+            mc.setFpsListener { fps = it }
+
+            val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
+            val size = streamingSize["size"] as Size
+            val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
+            val fpsValue = customVideoFps ?: 30
+            val rotation = CameraHelper.getCameraOrientation(getActivity() ?: glView.context)
+            val audioOk = if (!enableAudio) {
+                true
+            } else {
+                val ab = customAudioBitrate ?: aBitrate
+                mc.prepareAudio(ab, 32000, true, echoCanceler, noiseSuppressor)
+            }
+            val videoOk = mc.prepareVideo(size.width, size.height, fpsValue, bitrateRes, rotation)
+            if (!audioOk || !videoOk) {
+                result.error(
+                    "startMultiStreaming",
+                    "Error preparing multi stream, This device cant do it",
+                    null
+                )
+                return
+            }
+
+            // Start preview on the multi instance (OpenGlView already attached).
+            try {
+                mc.startPreview(cameraName, size.width, size.height)
+            } catch (e: Exception) {
+                Log.w("CameraNativeView", "multi startPreview failed, continuing", e)
+            }
+
+            multiDestinations = built
+            multiCamera = mc
+            lastStreamBitrate = bitrateRes
+            currentProtocol = built.first().protocol
+            queueBitrateAdapter.reset()
+
+            for (dest in built) {
+                mc.startStream(dest.type, dest.index, dest.url)
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            multiCamera = null
+            multiDestinations.clear()
+            result.error("startMultiStreaming", e.message, null)
+        }
+    }
+
+    fun stopStreamingDestination(id: String?, result: MethodChannel.Result) {
+        if (id.isNullOrBlank()) {
+            result.error("stopStreamingDestination", "id is required", null)
+            return
+        }
+        val mc = multiCamera
+        if (mc == null) {
+            result.error("stopStreamingDestination", "Multi streaming is not active", null)
+            return
+        }
+        val dest = multiDestinations.firstOrNull { it.id == id }
+        if (dest == null) {
+            result.error("stopStreamingDestination", "Unknown destination id: $id", null)
+            return
+        }
+        try {
+            mc.stopStream(dest.type, dest.index)
+            multiDestinations.removeAll { it.id == id }
+            if (multiDestinations.isEmpty()) {
+                stopMultiStreamingInternal(restorePreview = true)
+            }
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("stopStreamingDestination", e.message, null)
+        }
+    }
+
+    fun stopMultiStreaming(result: MethodChannel.Result) {
+        try {
+            stopMultiStreamingInternal(restorePreview = true)
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("stopMultiStreaming", e.message, null)
+        }
     }
 
     override fun getView(): View {
@@ -1625,8 +2460,13 @@ class CameraNativeView(
         } catch (_: Exception) {
         }
         if (genericCamera.isOnPreview) {
-            genericCamera.stopCamera()
+            try {
+                genericCamera.stopCamera()
+            } catch (_: Exception) {
+            }
         }
+        bufferAudioSource = null
+        releaseScreenMediaProjection()
         activity = null
     }
 
