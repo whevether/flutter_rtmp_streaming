@@ -1,3 +1,10 @@
+## 2.1.1
+
+1. **Android**: Fix front camera resetting to rear on `startVideoStreaming` (camera2 / CameraX / WHIP / StreamBase / multi / record).
+2. **Android**: Route filters, overlays, mute, pitch, flashlight, AE/WB lock, and tap-to-meter through the active pipeline (GenericCamera2, GenericStream, WhipStream, MultiCamera2).
+3. **Android**: `enableBufferAudio` while GenericCamera2 is live migrates the session to StreamBase; `startVideoRecording` / record+stream work on StreamBase/WHIP; WHIP ABR enabled.
+4. **Docs**: Clarify `setVideoSource` facing behavior (CameraX front/back; UVC/screen N/A) and idle preview remaining Camera2 until stream start.
+
 ## 2.1.0
 
 1. **Android build**: AGP **9.4.0**, Gradle **9.7.1**, plugin `android/` converted to Kotlin DSL (`.gradle.kts`). Plugin-level `gradle/wrapper` and `gradle.properties` removed (host/example owns Gradle/AndroidX). 

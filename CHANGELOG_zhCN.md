@@ -1,3 +1,10 @@
+## 2.1.1
+
+1. **Android**：修复 `startVideoStreaming` 时前置摄像头被重置为后置（camera2 / CameraX / WHIP / StreamBase / 多路 / 录制）。
+2. **Android**：滤镜、水印、静音、变调、闪光灯、曝光/白平衡锁定、点测光统一走当前活跃管线（GenericCamera2、GenericStream、WhipStream、MultiCamera2）。
+3. **Android**：推流中开启 `enableBufferAudio` 会迁到 StreamBase；录制 / 录制+推流支持 StreamBase/WHIP；WHIP 启用 ABR。
+4. **文档**：补充 `setVideoSource` 朝向说明（CameraX 按前后置；UVC/screen 无朝向）及开流前预览仍为 Camera2 的行为。
+
 ## 2.1.0
 
 1. **Android 构建**：AGP **9.4.0**、Gradle **9.7.1**，插件 `android/` 改为 Kotlin DSL（`.gradle.kts`）。移除插件侧 `gradle/wrapper` 与 `gradle.properties`（由宿主 / example 决定 Gradle 与 AndroidX）。

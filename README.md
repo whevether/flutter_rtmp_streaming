@@ -89,9 +89,12 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - 👆 Tap to meter: `tapToMeter` (exposure or white balance)  
 - 🎞️ Codecs: `setVideoCodec` / `setAudioCodec` (H264/H265/AV1/VP8/VP9; AAC/HE-AAC/OPUS/G711)  
 - 🔇 AEC / NS: `setAudioProcessing`  
-- 📷 Video source: `setVideoSource` (`camera2` / `cameraX` / `uvc` / `screen`)  
-- 🖥️ Screen capture permission: `requestScreenCapture` (required before `VideoSourceType.screen`)  
-- 🎤 Custom PCM: `enableBufferAudio` / `feedPcmAudio`  
+- 📷 Video source: `setVideoSource` (`camera2` / `cameraX` / `uvc` / `screen`)
+  - Preserves front/back on stream start for `camera2` / `cameraX` (UVC/screen have no facing)
+  - Idle preview stays Camera2 until streaming; after stop, preview returns to Camera2
+  - Filters / mute / flashlight / AE·WB / pitch route to the active StreamBase or WHIP session when live
+- 🖥️ Screen capture permission: `requestScreenCapture` (required before `VideoSourceType.screen`)
+- 🎤 Custom PCM: `enableBufferAudio` / `feedPcmAudio` (enabling while GenericCamera2 is live migrates to StreamBase)
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+, RTMP only)  
 - 📊 Queue stats in `getStreamStatistics`: `queueBytesOut`, `bytesOutPerSecond`, `queueCongestionPercent`, `totalBytesOut`  
@@ -332,6 +335,13 @@ await controller.stopMultiStreaming();
 
 ---
 
+### Android: `setVideoSource` / `enableBufferAudio`
+
+- **`setVideoSource`**: `camera2` (default), `cameraX`, `uvc`, `screen`. Call `requestScreenCapture` before `screen`.
+- **Facing**: On `startVideoStreaming`, `camera2` / `cameraX` re-apply the current front/back selection. UVC and screen have no lens facing. `switchCamera` while streaming UVC/screen returns an error.
+- **Preview**: Idle preview remains Camera2 until a StreamBase/WHIP session starts; after stop, preview returns to Camera2.
+- **`enableBufferAudio(true)`**: If GenericCamera2 is already streaming, the session is migrated to StreamBase (same URL) so `feedPcmAudio` can attach.
+
 ### Android: `lockExposure` / `unlockExposure` / `isExposureLocked`
 - **Purpose**: Lock / unlock Camera2 auto-exposure (avoids flicker from faces or lighting changes).
 - **When**: After preview or streaming has started.
@@ -367,4 +377,4 @@ await controller.startVideoStreaming(url);
 
 ## 🚀 Conclusion
 `rtmp_streaming` provides cross-platform streaming and recording for Flutter.  
-Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; since **2.0.1**, Android can safely set encoder options before `CameraPreview` mounts (cached, then applied). Since **2.1.0**, Android multi-streaming / codecs / video sources ship with RootEncoder 2.8.1, and `CameraValue.isStreaming` replaces `isStreamingVideoRtmp`. iOS retains playback and multitasking extras; Android retains filters, BT.709, RTT, and queue stats.
+Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; since **2.0.1**, Android can safely set encoder options before `CameraPreview` mounts (cached, then applied). Since **2.1.0**, Android multi-streaming / codecs / video sources ship with RootEncoder 2.8.1, and `CameraValue.isStreaming` replaces `isStreamingVideoRtmp`. **2.1.1** fixes Android front-camera reset on stream start and routes Android-only controls through CameraX / WHIP / StreamBase sessions. iOS retains playback and multitasking extras; Android retains filters, BT.709, RTT, and queue stats.

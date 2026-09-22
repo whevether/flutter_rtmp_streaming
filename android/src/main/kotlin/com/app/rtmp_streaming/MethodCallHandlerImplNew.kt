@@ -253,7 +253,11 @@ class MethodCallHandlerImplNew(
             }
             "switchCamera" -> {
                 Log.i("Stuff", "switchCamera")
-                getCameraView()?.switchCamera(call.argument("cameraName"),result)
+                val name = call.argument<String>("cameraName")
+                if (name != null) {
+                    nativeViewFactory?.cameraName = name
+                }
+                getCameraView()?.switchCamera(name, result)
             }
             "switchAudio" -> {
                 Log.i("Stuff", "switchAudio")

@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "com.app.rtmp_streaming"
-version = "2.1.0"
+version = "2.1.1"
 
 buildscript {
     repositories {
@@ -55,4 +55,6 @@ dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
     implementation("com.github.pedroSG94.RootEncoder:library:2.8.1")
     implementation("com.github.pedroSG94.RootEncoder:extra-sources:2.8.1")
+    // CameraX comes transitively from extra-sources (runtime); no compile deps needed
+    // for facing-only CameraXSource.switchCamera().
 }

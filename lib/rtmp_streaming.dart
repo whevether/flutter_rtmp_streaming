@@ -1094,10 +1094,15 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// Switch video source mode (Android / RootEncoder 2.8.1+).
   ///
-  /// Video capture source (Android). Applied on next stream start for camera2 path,
-  /// or immediately when a StreamBase session (CameraX/UVC/screen/WHIP) is active.
-  /// Not combined with [startMultiStreaming] (MultiCamera2 is camera2-only).
-  /// For [VideoSourceType.screen], call [requestScreenCapture] first (CameraPreview must be mounted).
+  /// Applied on next stream start for the camera2 path, or immediately when a
+  /// StreamBase session (CameraX / UVC / screen / WHIP) is active.
+  ///
+  /// On stream start, [VideoSourceType.camera2] and [VideoSourceType.cameraX] re-apply the
+  /// current camera facing (front/back). UVC and screen have no lens facing.
+  /// Idle preview remains Camera2 until streaming starts; after stop, preview
+  /// returns to Camera2. Not combined with [startMultiStreaming] (MultiCamera2
+  /// is camera2-only). For [VideoSourceType.screen], call [requestScreenCapture]
+  /// first ([CameraPreview] must be mounted).
   Future<void> setVideoSource(VideoSourceType source) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
@@ -1122,6 +1127,9 @@ class CameraController extends ValueNotifier<CameraValue> {
   }
 
   /// Use BufferAudioSource instead of mic (Android). Then feed PCM via [feedPcmAudio].
+  ///
+  /// If a GenericCamera2 stream is already live, enabling buffer audio migrates
+  /// that session onto the StreamBase path (same URL) so PCM input can attach.
   Future<void> enableBufferAudio(bool enable) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(

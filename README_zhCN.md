@@ -91,9 +91,12 @@
 - 👆 点击测光：`tapToMeter`（曝光或白平衡）  
 - 🎞️ 编解码器：`setVideoCodec` / `setAudioCodec`（H264/H265/AV1/VP8/VP9；AAC/HE-AAC/OPUS/G711）  
 - 🔇 回声消除 / 降噪：`setAudioProcessing`  
-- 📷 视频源：`setVideoSource`（`camera2` / `cameraX` / `uvc` / `screen`）  
-- 🖥️ 屏幕采集授权：`requestScreenCapture`（`VideoSourceType.screen` 前必调）  
-- 🎤 自定义 PCM：`enableBufferAudio` / `feedPcmAudio`  
+- 📷 视频源：`setVideoSource`（`camera2` / `cameraX` / `uvc` / `screen`）
+  - `camera2` / `cameraX` 开流时保持当前前后置（UVC/screen 无镜头朝向）
+  - 开流前预览仍为 Camera2；停流后预览回到 Camera2
+  - 推流中滤镜 / 静音 / 闪光灯 / 曝光·白平衡 / 变调会接到当前 StreamBase 或 WHIP 会话
+- 🖥️ 屏幕采集授权：`requestScreenCapture`（`VideoSourceType.screen` 前必调）
+- 🎤 自定义 PCM：`enableBufferAudio` / `feedPcmAudio`（GenericCamera2 推流中开启会迁到 StreamBase）
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
 - 📶 RTMP Ping / RTT：`setRtmpShouldSendPings`（RootEncoder 2.7.0+，仅 RTMP）  
 - 📊 队列统计：`getStreamStatistics` 的 `queueBytesOut`、`bytesOutPerSecond`、`queueCongestionPercent`、`totalBytesOut`  
@@ -342,6 +345,13 @@ await controller.stopMultiStreaming();
 
 ---
 
+### Android：`setVideoSource` / `enableBufferAudio`
+
+- **`setVideoSource`**：`camera2`（默认）、`cameraX`、`uvc`、`screen`。使用 `screen` 前须先 `requestScreenCapture`。
+- **朝向**：`startVideoStreaming` 时，`camera2` / `cameraX` 会重新应用当前前后置；UVC、screen 无镜头朝向。UVC/screen 推流中调用 `switchCamera` 会报错。
+- **预览**：开流前预览仍为 Camera2；停流后预览回到 Camera2。
+- **`enableBufferAudio(true)`**：若 GenericCamera2 已在推流，会迁到 StreamBase（同一 URL），以便 `feedPcmAudio` 接入。
+
 ### Android：`lockExposure` / `unlockExposure` / `isExposureLocked`
 - **作用**：锁定 / 解锁 Camera2 自动曝光（避免人脸或光线导致曝光跳动）。
 - **调用时机**：预览或推流**已启动之后**。
@@ -377,4 +387,4 @@ await controller.startVideoStreaming(url);
 
 ## 🚀 总结
 `rtmp_streaming` 为 Flutter 开发者提供跨平台推流与视频录制能力。  
-自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；**2.0.1** 起 Android 可在 `CameraPreview` 挂载前安全设置编码参数（先缓存后应用）；**2.1.0** 起 Android 多路推流 / 编解码 / 视频源基于 RootEncoder 2.8.1，且 `CameraValue.isStreaming` 取代 `isStreamingVideoRtmp`。iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 与队列统计等扩展能力。
+自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；**2.0.1** 起 Android 可在 `CameraPreview` 挂载前安全设置编码参数（先缓存后应用）；**2.1.0** 起 Android 多路推流 / 编解码 / 视频源基于 RootEncoder 2.8.1，且 `CameraValue.isStreaming` 取代 `isStreamingVideoRtmp`。**2.1.1** 修复 Android 开流时前置被重置，并将 Android 独有控制接到 CameraX / WHIP / StreamBase 会话。iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 与队列统计等扩展能力。

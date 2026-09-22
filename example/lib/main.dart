@@ -94,8 +94,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       text: 'rtmp://192.168.2.81/live/livestream',
     );
     _multiUrl2Controller = TextEditingController(
-      text:
-          'srt://192.168.2.81:10080?streamid=#!::r=live/livestream,m=publish',
+      text: 'srt://192.168.2.81:10080?streamid=#!::r=live/livestream,m=publish',
     );
     onInit();
     WidgetsBinding.instance.addObserver(this);
@@ -148,22 +147,32 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       key: _scaffoldKey,
       appBar: AppBar(
         title: const Text('Camera example'),
-        actions: Platform.isAndroid ? [
-          ElevatedButton(onPressed: isControllerInitialized ? ()async{
-            await controller.setFilter(0);
-          } : null, child: Text("set filter")),
-          ElevatedButton(onPressed: isControllerInitialized ? ()async{
-            await controller.removeFilter(0);
-          } : null, child: Text("remove filter")),
-          ElevatedButton(
-            onPressed: isControllerInitialized
-                ? () async {
-                    await controller.setFilter(43);
-                  }
-                : null,
-            child: const Text('edge HQ'),
-          ),
-        ] : null,
+        actions: Platform.isAndroid
+            ? [
+                ElevatedButton(
+                    onPressed: isControllerInitialized
+                        ? () async {
+                            await controller.setFilter(0);
+                          }
+                        : null,
+                    child: Text("set filter")),
+                ElevatedButton(
+                    onPressed: isControllerInitialized
+                        ? () async {
+                            await controller.removeFilter(0);
+                          }
+                        : null,
+                    child: Text("remove filter")),
+                ElevatedButton(
+                  onPressed: isControllerInitialized
+                      ? () async {
+                          await controller.setFilter(43);
+                        }
+                      : null,
+                  child: const Text('edge HQ'),
+                ),
+              ]
+            : null,
       ),
       body: Column(
         children: <Widget>[
@@ -188,12 +197,14 @@ class CameraExampleHomeState extends State<CameraExampleHome>
           )
         ],
       ),
-       floatingActionButton: FloatingActionButton(
-          onPressed: isControllerInitialized  ? () async{
-            await controller.dispose();
-          } : null,
-          child: Icon(Icons.close),
-        ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: isControllerInitialized
+            ? () async {
+                await controller.dispose();
+              }
+            : null,
+        child: Icon(Icons.close),
+      ),
     );
   }
 
@@ -256,7 +267,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               style: TextStyle(color: Colors.white),
             ),
             onPressed:
-                (isControllerInitialized && (isRecordingVideo || isStreaming)) ? onTakePictureButtonPressed : null,
+                (isControllerInitialized && (isRecordingVideo || isStreaming))
+                    ? onTakePictureButtonPressed
+                    : null,
           ),
         SizedBox(
           width: 5,
@@ -421,11 +434,10 @@ class CameraExampleHomeState extends State<CameraExampleHome>
           onChanged: (bool value) async {
             if (isControllerInitialized &&
                 _cameraDesc?.lensDirection == CameraLensDirection.back) {
-                   setState(() {
+              setState(() {
                 isFlashLight = value;
               });
               await controller.switchFlashLight(value);
-             
             } else {
               showInSnackBar('Please select a camera first.');
             }
@@ -475,7 +487,8 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                         final ok = await controller.lockExposure();
                         setState(() => _exposureLocked = ok);
                         if (!ok) {
-                          showInSnackBar('Exposure lock failed (unsupported or camera not started)');
+                          showInSnackBar(
+                              'Exposure lock failed (unsupported or camera not started)');
                         }
                       } else {
                         await controller.unlockExposure();
@@ -496,36 +509,36 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               ),
             ),
         ],
-          ElevatedButton(
-            onPressed: !isControllerInitialized
-                ? null
-                : () async {
-                    try {
-                      await controller.setOverlayText(
-                        text: 'LIVE',
-                        fontSize: 36,
-                        colorArgb: 0xFFFF0000,
-                        position: OverlayPosition.topLeft,
-                      );
-                    } on CameraException catch (e) {
-                      _showCameraException(e);
-                    }
-                  },
-            child: const Text('叠字 LIVE'),
-          ),
-          ElevatedButton(
-            onPressed: !isControllerInitialized
-                ? null
-                : () async {
-                    try {
-                      await controller.clearOverlay();
-                    } on CameraException catch (e) {
-                      _showCameraException(e);
-                    }
-                  },
-            child: const Text('清除叠字'),
-          ),
-          if (Platform.isIOS) ...[
+        ElevatedButton(
+          onPressed: !isControllerInitialized
+              ? null
+              : () async {
+                  try {
+                    await controller.setOverlayText(
+                      text: 'LIVE',
+                      fontSize: 36,
+                      colorArgb: 0xFFFF0000,
+                      position: OverlayPosition.topLeft,
+                    );
+                  } on CameraException catch (e) {
+                    _showCameraException(e);
+                  }
+                },
+          child: const Text('叠字 LIVE'),
+        ),
+        ElevatedButton(
+          onPressed: !isControllerInitialized
+              ? null
+              : () async {
+                  try {
+                    await controller.clearOverlay();
+                  } on CameraException catch (e) {
+                    _showCameraException(e);
+                  }
+                },
+          child: const Text('清除叠字'),
+        ),
+        if (Platform.isIOS) ...[
           const SizedBox(height: 8),
           const Text('多任务相机 (HaishinKit 2.2.5+, iOS 17+)'),
           Switch(
@@ -560,7 +573,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
             child: const Text('HaishinKit 视频编码示例'),
           ),
         ],
-        
+
         _thumbnailWidget(),
       ],
     );
@@ -573,7 +586,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       return;
     }
     try {
-       setState(() {
+      setState(() {
         _cameraDesc = cld;
       });
       await controller.switchCamera(cld.name!);
@@ -624,7 +637,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       showInSnackBar("No available cameras");
       return;
     }
-    var cameraItem = cameras[0];
+    var cameraItem = cameras[1];
     setState(() {
       _cameraDesc = cameraItem;
     });
@@ -762,13 +775,21 @@ class CameraExampleHomeState extends State<CameraExampleHome>
     }
     try {
       if (Platform.isAndroid) {
+        // await controller.setVideoSource(VideoSourceType.cameraX);
+        // await controller.setVideoCodec(VideoCodecType.h265);
+        // await controller.setAudioCodec(AudioCodecType.aac);
+
+        // await controller.setAudioSettings(128 * 1024);
+        // await controller.setVideoSettings(bitrate: 5 * 1024 * 1024);
+        // await controller.setFrameRate(30);
         await controller.setForceBt709Color(_forceBt709);
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
       }
       await controller.startVideoStreaming(myUrl, protocol: _selectedProtocol);
+      // await controller?.unlockExposure();
+      // await controller?.unlockWhiteBalance();
       setState(() => _isMultiStreaming = false);
-      showInSnackBar(
-          'Streaming (${_selectedProtocol.name}) video to $myUrl');
+      showInSnackBar('Streaming (${_selectedProtocol.name}) video to $myUrl');
       await WakelockPlus.enable();
       _startAndroidStreamStatsTimer();
     } on CameraException catch (e) {
@@ -864,8 +885,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
       }
       videoPath = filePath;
-      await controller.startVideoRecordingAndStreaming(
-          videoPath!, myUrl,
+      await controller.startVideoRecordingAndStreaming(videoPath!, myUrl,
           protocol: _selectedProtocol);
       showInSnackBar(
           'Recording streaming (${_selectedProtocol.name}) video to $myUrl');
@@ -881,8 +901,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   void _startAndroidStreamStatsTimer() {
     if (!Platform.isAndroid) return;
     _streamStatsTimer?.cancel();
-    _streamStatsTimer =
-        Timer.periodic(const Duration(seconds: 1), (_) async {
+    _streamStatsTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       if (!mounted || !isStreaming) return;
       try {
         final s = await controller.getStreamStatistics();
@@ -968,9 +987,6 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       showInSnackBar(e.toString());
     }
   }
-
-
-  
 
   Future<String> _getUrl() async {
     // Open up a dialog for the url + protocol
@@ -1101,9 +1117,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               ? 'rtmp://192.168.2.81/live/live2'
               : 'rtmp://192.168.2.81/live/live';
         case StreamingProtocol.udp:
-          return second
-              ? 'udp://192.168.2.81:5005'
-              : 'udp://192.168.2.81:5004';
+          return second ? 'udp://192.168.2.81:5005' : 'udp://192.168.2.81:5004';
         case StreamingProtocol.whip:
         case StreamingProtocol.whep:
           return '';
@@ -1155,8 +1169,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                       value: protocol1,
                       onChanged: (v) => setDialogState(() {
                         protocol1 = v;
-                        _multiUrl1Controller.text =
-                            sampleUrl(v, second: false);
+                        _multiUrl1Controller.text = sampleUrl(v, second: false);
                         url1 = _multiUrl1Controller.text;
                       }),
                     ),
@@ -1174,8 +1187,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                       value: protocol2,
                       onChanged: (v) => setDialogState(() {
                         protocol2 = v;
-                        _multiUrl2Controller.text =
-                            sampleUrl(v, second: true);
+                        _multiUrl2Controller.text = sampleUrl(v, second: true);
                         url2 = _multiUrl2Controller.text;
                       }),
                     ),
