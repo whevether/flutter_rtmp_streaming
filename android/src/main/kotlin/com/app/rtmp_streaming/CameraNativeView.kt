@@ -122,7 +122,9 @@ class CameraNativeView(
     private var audioCodec: AudioCodec = AudioCodec.AAC
     private var echoCanceler: Boolean = false
     private var noiseSuppressor: Boolean = false
-    private var videoSourceMode: String = "camera2" // camera2|cameraX|uvc|screen
+    // Use the same CameraX source for the idle preview and the live stream.
+    // A caller can still opt into Camera2, UVC or screen with setVideoSource.
+    private var videoSourceMode: String = "camerax" // camera2|cameraX|uvc|screen
     private var bufferAudioSource: BufferAudioSource? = null
     private var useBufferAudio: Boolean = false
     private var multiCamera: MultiCamera2? = null
@@ -466,6 +468,9 @@ class CameraNativeView(
             } catch (e: Exception) {
                 Log.e("CameraNativeView", "stopCamera on surfaceDestroyed failed", e)
             }
+        }
+        if (genericStream?.isOnPreview == true) {
+            stopGenericStreamInternal(restorePreview = false)
         }
         isSurfaceCreated = false
     }
@@ -891,6 +896,7 @@ class CameraNativeView(
         stream.getStreamClient().setReTries(10)
         stream.setVideoCodec(videoCodec)
         stream.setAudioCodec(audioCodec)
+        stream.forceBt709Color(forceBt709Color)
 
         val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
         val size = streamingSize["size"] as Size
@@ -934,10 +940,6 @@ class CameraNativeView(
                 result.error("videoStreamingFailed", e.message, null)
                 return
             }
-        }
-        try {
-            stream.forceBt709Color(forceBt709Color)
-        } catch (_: Exception) {
         }
         stream.setFpsListener { fps = it }
         stream.startPreview(glView)
@@ -988,6 +990,8 @@ class CameraNativeView(
                 Log.e("CameraNativeView", "stopCamera before WHIP failed", e)
             }
         }
+        // The idle preview may be owned by CameraX instead of GenericCamera2.
+        stopGenericStreamInternal(restorePreview = false)
         whipStream?.let { existing ->
             try {
                 if (existing.isStreaming) existing.stopStream()
@@ -1006,6 +1010,7 @@ class CameraNativeView(
 
         stream.setVideoCodec(videoCodec)
         stream.setAudioCodec(audioCodec)
+        stream.forceBt709Color(forceBt709Color)
 
         val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
         val size = streamingSize["size"] as Size
@@ -1050,10 +1055,6 @@ class CameraNativeView(
                 result.error("videoStreamingFailed", e.message, null)
                 return
             }
-        }
-        try {
-            stream.forceBt709Color(forceBt709Color)
-        } catch (_: Exception) {
         }
         stream.setFpsListener { fps = it }
         stream.startPreview(glView)
@@ -1776,6 +1777,37 @@ class CameraNativeView(
 
     }
 
+    private fun startCameraXPreview(): Boolean {
+        val current = genericStream
+        if (current?.isOnPreview == true && current.videoSource is CameraXSource) {
+            applySelectedCameraToStreamSource(current.videoSource)
+            return true
+        }
+        stopGenericStreamInternal(restorePreview = false)
+        if (genericCamera.isOnPreview) genericCamera.stopCamera()
+
+        val ctx = getActivity() ?: glView.context
+        val previewSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
+        val size = previewSize["size"] as Size
+        val bitrate = customVideoBitrate ?: (previewSize["bitrate"] as Int)
+        val stream = GenericStream(ctx, this)
+        stream.setVideoCodec(videoCodec)
+        stream.setAudioCodec(audioCodec)
+        // RootEncoder requires this before prepareVideo, including for idle preview.
+        stream.forceBt709Color(forceBt709Color)
+        val prepared = stream.prepareVideo(
+            size.width, size.height, bitrate, customVideoFps ?: 30, 2,
+            CameraHelper.getCameraOrientation(ctx)
+        )
+        if (!prepared) throw IllegalStateException("Unable to prepare CameraX preview")
+        stream.changeVideoSource(CameraXSource(ctx))
+        stream.setFpsListener { fps = it }
+        genericStream = stream
+        stream.startPreview(glView)
+        applySelectedCameraToStreamSource(stream.videoSource)
+        return true
+    }
+
     fun startPreview(cameraNameArg: String? = null): Boolean {
         val targetCamera = if (cameraNameArg.isNullOrEmpty()) {
             cameraName
@@ -1789,6 +1821,13 @@ class CameraNativeView(
             return false
         }
         return try {
+            if (videoSourceMode == "camerax") {
+                return startCameraXPreview()
+            }
+            // Camera2 preview cannot share the OpenGlView with an idle StreamBase preview.
+            if (genericStream?.isOnPreview == true) {
+                stopGenericStreamInternal(restorePreview = false)
+            }
             // RootEncoder startPreview is a no-op when preview is already started.
             if (genericCamera.isOnPreview) {
                 genericCamera.switchCamera(targetCamera)
@@ -1799,6 +1838,9 @@ class CameraNativeView(
             genericCamera.startPreview(targetCamera, size.width, size.height)
             true
         } catch (e: CameraAccessException) {
+            if (genericStream?.isOnPreview == true) {
+                stopGenericStreamInternal(restorePreview = false)
+            }
             if (genericCamera.isOnPreview) {
                 try {
                     genericCamera.stopCamera()
@@ -1813,6 +1855,9 @@ class CameraNativeView(
             }
             false
         } catch (e: Exception) {
+            if (genericStream?.isOnPreview == true) {
+                stopGenericStreamInternal(restorePreview = false)
+            }
             Log.e("CameraNativeView", "startPreview failed", e)
             getActivity()?.runOnUiThread {
                 dartMessenger?.send(
@@ -2490,7 +2535,11 @@ class CameraNativeView(
         ctx: Context
     ) {
         when (videoSourceMode) {
-            "camerax" -> changeVideoSource(CameraXSource(ctx))
+            "camerax" -> {
+                if (currentSource !is CameraXSource) {
+                    changeVideoSource(CameraXSource(ctx))
+                }
+            }
             "uvc" -> changeVideoSource(CameraUvcSource())
             "screen" -> {
                 val projection = screenMediaProjection
@@ -2606,6 +2655,7 @@ class CameraNativeView(
                     Log.e("CameraNativeView", "stopCamera before multi failed", e)
                 }
             }
+            stopGenericStreamInternal(restorePreview = false)
 
             val rtmpCheckers = mutableListOf<ConnectChecker>()
             val rtspCheckers = mutableListOf<ConnectChecker>()
