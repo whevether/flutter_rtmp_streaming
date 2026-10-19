@@ -1301,14 +1301,11 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value = value.copyWith(
-          isRecordingVideo: false,
-          isStreaming: false,
-          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopRecording',
         <String, dynamic>{},
       );
+      value = value.copyWith(isRecordingVideo: false, isRecordingPaused: false);
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1630,14 +1627,12 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value = value.copyWith(
-          isStreaming: false,
-          isRecordingVideo: false,
-          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopStreaming',
         <String, dynamic>{},
       );
+      value = value.copyWith(
+          isStreaming: false, isStreamingPaused: false, clearStreamingProtocol: true);
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }

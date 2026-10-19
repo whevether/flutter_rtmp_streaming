@@ -73,6 +73,7 @@ import com.pedro.encoder.input.gl.render.filters.`object`.ImageFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.SurfaceFilterRender
 import com.pedro.encoder.input.gl.render.filters.`object`.TextFilterRender
 import com.pedro.encoder.input.sources.audio.BufferAudioSource
+import com.pedro.encoder.input.sources.audio.NoAudioSource
 import com.pedro.encoder.input.sources.audio.MicrophoneSource
 import com.pedro.encoder.input.sources.video.Camera2Source
 import com.pedro.encoder.input.sources.video.ScreenSource
@@ -354,6 +355,7 @@ class CameraNativeView(
     }
 
     private fun isAudioMutedNow(): Boolean {
+        if (!enableAudio && !useBufferAudio) return true
         activeAudioSource()?.let { src ->
             val mic = src as? MicrophoneSource
             if (mic != null) return mic.isMuted()
@@ -444,6 +446,7 @@ class CameraNativeView(
 
     override fun surfaceDestroyed(p0: SurfaceHolder) {
         Log.d("CameraNativeView", "surfaceDestroyed")
+        isSurfaceCreated = false
         if (isStreamingNow()) {
             resumeStreamAfterSurfaceCreated = true
             isRestoringFromSurfaceDestroy = true
@@ -469,8 +472,15 @@ class CameraNativeView(
                 Log.e("CameraNativeView", "stopCamera on surfaceDestroyed failed", e)
             }
         }
-        if (genericStream?.isOnPreview == true) {
-            stopGenericStreamInternal(restorePreview = false)
+        genericStream?.let { stream ->
+            if (stream.isRecording) {
+                if (stream.isOnPreview) stream.stopPreview()
+            } else {
+                stopGenericStreamInternal(restorePreview = false)
+            }
+        }
+        whipStream?.let { stream ->
+            if (stream.isOnPreview) stream.stopPreview()
         }
         isSurfaceCreated = false
     }
@@ -767,14 +777,14 @@ class CameraNativeView(
             )
             return
         }
-        glView.takePhoto {
+        activeGlInterface()?.takePhoto {
             try {
                 val outputStream: OutputStream = BufferedOutputStream(FileOutputStream(file))
                 it.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
                 outputStream.close()
                 view.post { result.success(null) }
             } catch (e: IOException) {
-                result.error("IOError", "Failed saving image", null)
+                view.post { result.error("IOError", "Failed saving image", null) }
             }
         }
     }
@@ -827,6 +837,10 @@ class CameraNativeView(
         }
 
         try {
+            if (isRecordingNow()) {
+                result.error("videoStreamingFailed", "Stop recording before starting a new stream session", null)
+                return
+            }
             if (isStreamingNow()) {
                 // Restart: stop current session then start the new URL.
                 stopActiveStream(restorePreview = false)
@@ -843,10 +857,16 @@ class CameraNativeView(
                 startGenericStreaming(url, bitrate, result)
             }
         } catch (e: CameraAccessException) {
+            runCatching { stopActiveStream(restorePreview = false) }
+            startPreview(cameraName)
             result.error("videoStreamingFailed", e.message, null)
         } catch (e: IOException) {
+            runCatching { stopActiveStream(restorePreview = false) }
+            startPreview(cameraName)
             result.error("videoStreamingFailed", e.message, null)
         } catch (e: Exception) {
+            runCatching { stopActiveStream(restorePreview = false) }
+            startPreview(cameraName)
             result.error("videoStreamingFailed", e.message, null)
         }
     }
@@ -893,6 +913,7 @@ class CameraNativeView(
         stopGenericStreamInternal(restorePreview = false)
 
         val stream = GenericStream(ctx, this)
+        genericStream = stream
         stream.getStreamClient().setReTries(10)
         stream.setVideoCodec(videoCodec)
         stream.setAudioCodec(audioCodec)
@@ -903,22 +924,12 @@ class CameraNativeView(
         val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
         val fpsValue = customVideoFps ?: 30
         val rotation = CameraHelper.getCameraOrientation(ctx)
-        val audioOk = if (!enableAudio) {
-            true
-        } else {
-            val ab = customAudioBitrate ?: aBitrate
-            stream.prepareAudio(
-                sampleRate = 32000,
-                isStereo = true,
-                bitrate = ab,
-                echoCanceler = echoCanceler,
-                noiseSuppressor = noiseSuppressor
-            )
-        }
+        val audioOk = prepareStreamAudio(stream)
         val videoOk = stream.prepareVideo(
             size.width, size.height, bitrateRes, fpsValue, 2, rotation
         )
         if (!audioOk || !videoOk) {
+            stopGenericStreamInternal(restorePreview = true)
             result.error(
                 "videoStreamingFailed",
                 "Error preparing stream (StreamBase), This device cant do it",
@@ -929,17 +940,9 @@ class CameraNativeView(
         try {
             applyPreferredVideoSourceToStreamBase(stream, ctx)
         } catch (e: Exception) {
+            stopActiveStream(restorePreview = true)
             result.error("videoStreamingFailed", e.message, null)
             return
-        }
-        if (useBufferAudio) {
-            val buf = bufferAudioSource ?: BufferAudioSource().also { bufferAudioSource = it }
-            try {
-                stream.changeAudioSource(buf)
-            } catch (e: Exception) {
-                result.error("videoStreamingFailed", e.message, null)
-                return
-            }
         }
         stream.setFpsListener { fps = it }
         stream.startPreview(glView)
@@ -959,18 +962,33 @@ class CameraNativeView(
         result.success(null)
     }
 
+    private fun prepareStreamAudio(stream: com.pedro.library.base.StreamBase): Boolean {
+        val source = when {
+            useBufferAudio -> bufferAudioSource ?: BufferAudioSource().also { bufferAudioSource = it }
+            enableAudio -> MicrophoneSource()
+            else -> NoAudioSource()
+        }
+        stream.changeAudioSource(source)
+        stream.getStreamClient().setOnlyVideo(!enableAudio && !useBufferAudio)
+        // StreamBase starts both encoders, even with NoAudioSource.
+        return stream.prepareAudio(32000, true, customAudioBitrate ?: aBitrate,
+            echoCanceler, noiseSuppressor)
+    }
+
+    private fun releaseWhipStream() {
+        val stream = whipStream ?: return
+        whipStream = null
+        stream.release()
+    }
+
     private fun stopGenericStreamInternal(restorePreview: Boolean) {
-        genericStream?.let { stream ->
-            try {
-                if (stream.isStreaming) stream.stopStream()
-                if (stream.isOnPreview) stream.stopPreview()
-            } catch (e: Exception) {
-                Log.e("CameraNativeView", "stop GenericStream failed", e)
-            }
-            genericStream = null
-            if (restorePreview && isSurfaceCreated) {
-                startPreview(cameraName)
-            }
+        val stream = genericStream ?: return
+        genericStream = null
+        try {
+            stream.release()
+        } finally {
+            lastStreamingStats = null
+            if (restorePreview && isSurfaceCreated) startPreview(cameraName)
         }
     }
 
@@ -992,16 +1010,10 @@ class CameraNativeView(
         }
         // The idle preview may be owned by CameraX instead of GenericCamera2.
         stopGenericStreamInternal(restorePreview = false)
-        whipStream?.let { existing ->
-            try {
-                if (existing.isStreaming) existing.stopStream()
-                if (existing.isOnPreview) existing.stopPreview()
-            } catch (_: Exception) {
-            }
-            whipStream = null
-        }
+        releaseWhipStream()
 
         val stream = WhipStream(ctx, this)
+        whipStream = stream
         stream.getStreamClient().setReTries(10)
         if (!whipToken.isNullOrEmpty()) {
             (stream.getStreamClient() as? WhipStreamClient)?.setAuthorization(whipToken)
@@ -1017,22 +1029,13 @@ class CameraNativeView(
         val bitrateRes = customVideoBitrate ?: (bitrate ?: (streamingSize["bitrate"] as Int))
         val fpsValue = customVideoFps ?: 30
         val rotation = CameraHelper.getCameraOrientation(ctx)
-        val audioOk = if (!enableAudio) {
-            true
-        } else {
-            val ab = customAudioBitrate ?: aBitrate
-            stream.prepareAudio(
-                sampleRate = 32000,
-                isStereo = true,
-                bitrate = ab,
-                echoCanceler = echoCanceler,
-                noiseSuppressor = noiseSuppressor
-            )
-        }
+        val audioOk = prepareStreamAudio(stream)
         val videoOk = stream.prepareVideo(
             size.width, size.height, bitrateRes, fpsValue, 2, rotation
         )
         if (!audioOk || !videoOk) {
+            releaseWhipStream()
+            startPreview(cameraName)
             result.error(
                 "videoStreamingFailed",
                 "Error preparing WHIP stream, This device cant do it",
@@ -1044,17 +1047,9 @@ class CameraNativeView(
         try {
             applyPreferredVideoSourceToWhip(stream, ctx)
         } catch (e: Exception) {
+            stopActiveStream(restorePreview = true)
             result.error("videoStreamingFailed", e.message, null)
             return
-        }
-        if (useBufferAudio) {
-            val buf = bufferAudioSource ?: BufferAudioSource().also { bufferAudioSource = it }
-            try {
-                stream.changeAudioSource(buf)
-            } catch (e: Exception) {
-                result.error("videoStreamingFailed", e.message, null)
-                return
-            }
         }
         stream.setFpsListener { fps = it }
         stream.startPreview(glView)
@@ -1065,23 +1060,22 @@ class CameraNativeView(
     }
 
     private fun stopActiveStream(restorePreview: Boolean = true) {
+        val recordingStream = whipStream?.takeIf { it.isRecording }
+            ?: genericStream?.takeIf { it.isRecording }
+        if (recordingStream != null) {
+            if (recordingStream.isStreaming) recordingStream.stopStream()
+            if (!restorePreview && recordingStream.isOnPreview) recordingStream.stopPreview()
+            return
+        }
         val hadMulti = multiCamera != null
         stopMultiStreamingInternal(restorePreview = false)
         if (genericStream != null) {
             stopGenericStreamInternal(restorePreview = restorePreview)
             return
         }
-        whipStream?.let { stream ->
-            try {
-                if (stream.isStreaming) stream.stopStream()
-                if (stream.isOnPreview) stream.stopPreview()
-            } catch (e: Exception) {
-                Log.e("CameraNativeView", "stop WHIP stream failed", e)
-            }
-            whipStream = null
-            if (restorePreview && isSurfaceCreated) {
-                startPreview(cameraName)
-            }
+        if (whipStream != null) {
+            releaseWhipStream()
+            if (restorePreview && isSurfaceCreated) startPreview(cameraName)
             return
         }
         if (genericCamera.isStreaming) {
@@ -1703,8 +1697,8 @@ class CameraNativeView(
             lastStreamBitrate = null
             lastStreamProtocol = null
             lastWhipToken = null
-            stopActiveStream()
             stopRecordOnActivePipeline()
+            stopActiveStream()
             result.success(null)
         } catch (e: CameraAccessException) {
             result.error("videoRecordingFailed", e.message, null)
@@ -1791,6 +1785,7 @@ class CameraNativeView(
         val size = previewSize["size"] as Size
         val bitrate = customVideoBitrate ?: (previewSize["bitrate"] as Int)
         val stream = GenericStream(ctx, this)
+        genericStream = stream
         stream.setVideoCodec(videoCodec)
         stream.setAudioCodec(audioCodec)
         // RootEncoder requires this before prepareVideo, including for idle preview.
@@ -1799,7 +1794,9 @@ class CameraNativeView(
             size.width, size.height, bitrate, customVideoFps ?: 30, 2,
             CameraHelper.getCameraOrientation(ctx)
         )
-        if (!prepared) throw IllegalStateException("Unable to prepare CameraX preview")
+        if (!prepared || !prepareStreamAudio(stream)) {
+            throw IllegalStateException("Unable to prepare CameraX preview")
+        }
         stream.changeVideoSource(CameraXSource(ctx))
         stream.setFpsListener { fps = it }
         genericStream = stream
@@ -1821,6 +1818,7 @@ class CameraNativeView(
             return false
         }
         return try {
+            if (isStreamingNow() || isRecordingNow()) return true
             if (videoSourceMode == "camerax") {
                 return startCameraXPreview()
             }
@@ -1855,9 +1853,7 @@ class CameraNativeView(
             }
             false
         } catch (e: Exception) {
-            if (genericStream?.isOnPreview == true) {
-                stopGenericStreamInternal(restorePreview = false)
-            }
+            runCatching { stopGenericStreamInternal(restorePreview = false) }
             Log.e("CameraNativeView", "startPreview failed", e)
             getActivity()?.runOnUiThread {
                 dartMessenger?.send(
@@ -1871,6 +1867,16 @@ class CameraNativeView(
 
     private fun restorePreviewAfterSurfaceChange() {
         if (!isSurfaceCreated) {
+            return
+        }
+        val recordingStream = whipStream?.takeIf { it.isRecording }
+            ?: genericStream?.takeIf { it.isRecording }
+        if (recordingStream != null) {
+            if (!recordingStream.isOnPreview) recordingStream.startPreview(glView)
+            if (resumeStreamAfterSurfaceCreated && lastStreamUrl != null) {
+                resumeStreamAfterSurfaceCreated = false
+                recordingStream.startStream(lastStreamUrl!!)
+            }
             return
         }
         if (resumeStreamAfterSurfaceCreated && lastStreamUrl != null) {
@@ -2645,6 +2651,10 @@ class CameraNativeView(
             return
         }
         try {
+            if (isRecordingNow()) {
+                result.error("startMultiStreaming", "Stop recording before starting multi streaming", null)
+                return
+            }
             if (isStreamingNow() || multiCamera != null) {
                 stopActiveStream(restorePreview = false)
             }
@@ -2831,6 +2841,7 @@ class CameraNativeView(
         lastStreamProtocol = null
         lastWhipToken = null
         try {
+            stopRecordOnActivePipeline()
             stopActiveStream(restorePreview = false)
         } catch (_: Exception) {
         }
