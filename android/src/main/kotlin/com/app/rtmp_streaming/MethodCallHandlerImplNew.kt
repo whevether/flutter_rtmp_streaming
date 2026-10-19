@@ -84,6 +84,39 @@ class MethodCallHandlerImplNew(
         }
         try {
         when (call.method) {
+            "getCapabilities" -> {
+                val encoderInfos = android.media.MediaCodecList(android.media.MediaCodecList.REGULAR_CODECS)
+                    .codecInfos.filter { it.isEncoder }
+                val encoders = encoderInfos.flatMap { it.supportedTypes.toList() }.toSet()
+                val heAac = encoderInfos.any { info -> runCatching {
+                    info.getCapabilitiesForType("audio/mp4a-latm").profileLevels.any {
+                        it.profile == android.media.MediaCodecInfo.CodecProfileLevel.AACObjectHE
+                    }
+                }.getOrDefault(false) }
+                val video = mapOf("h264" to "video/avc", "h265" to "video/hevc", "av1" to "video/av01", "vp8" to "video/x-vnd.on2.vp8", "vp9" to "video/x-vnd.on2.vp9")
+                result.success(mapOf(
+                    "backend" to "RootEncoder/2.8.1",
+                    "protocols" to listOf("rtmp", "rtsp", "srt", "udp", "whip"),
+                    "videoCodecs" to video.filterValues { it in encoders }.keys.toList(),
+                    "audioCodecs" to buildList {
+                        if ("audio/mp4a-latm" in encoders) add("aac")
+                        if (heAac) add("heAac")
+                        if ("audio/opus" in encoders) add("opus")
+                        add("g711")
+                    },
+                    "features" to mapOf("recordingPause" to true, "zoom" to true,
+                        "focus" to true, "overlays" to true, "filters" to true,
+                        "screenCapture" to true, "uvc" to true, "pcmInput" to true,
+                        "whipBearerToken" to true, "playback" to false,
+                        "multitaskingCameraAccess" to false, "rtmpPing" to true,
+                        "captureTelemetry" to true, "bitRateMode" to false,
+                        "microphoneDetach" to false,
+                        "echoCanceler" to android.media.audiofx.AcousticEchoCanceler.isAvailable(),
+                        "noiseSuppressor" to android.media.audiofx.NoiseSuppressor.isAvailable(),
+                        "pitchShift" to true, "rtmpMetadata" to true) + (getCameraView()?.cameraCapabilityFlags()
+                        ?: mapOf("zoom" to false, "focus" to false, "captureTelemetry" to false))
+                ))
+            }
             "availableCameras" -> try {
                 Log.i("Stuff", "availableCameras")
                 result.success(CameraUtils.getAvailableCameras(activity))
@@ -243,7 +276,22 @@ class MethodCallHandlerImplNew(
                     }
                 }
             }
+            "setCapturePreset" -> {
+                val preset = ResolutionPreset.valueOf(requireNotNull(call.argument<String>("preset")))
+                val cached = cacheOnSuccess(result) {
+                    nativeViewFactory?.preset = preset
+                    nativeViewFactory?.pendingVideoWidth = null
+                    nativeViewFactory?.pendingVideoHeight = null
+                }
+                val view = getCameraView()
+                if (view != null) view.setCapturePreset(preset, cached) else cached.success(null)
+            }
             "setVideoSettings" -> {
+                val expectedFps = call.argument<Number>("expectedFrameRate")?.toDouble()
+                require(expectedFps == null || (expectedFps.isFinite() && expectedFps > 0 && expectedFps % 1.0 == 0.0)) { "expectedFrameRate must be a positive integer" }
+                val mode = call.argument<String>("bitRateMode")
+                require(mode == null) { "bitRateMode is not exposed on Android" }
+                require(call.argument<String>("profileLevel") == null) { "profileLevel is not supported on Android" }
                 val bitrate = call.argument<Int>("bitrate")
                 val width = call.argument<Int>("width")
                 val height = call.argument<Int>("height")
@@ -262,8 +310,14 @@ class MethodCallHandlerImplNew(
                 if (bitrate != null) {
                     nativeViewFactory?.pendingVideoBitrate = bitrate
                 }
+                if (expectedFps != null) nativeViewFactory?.pendingFrameRate = expectedFps.toInt()
                 val view = getCameraView()
                 if (view != null) {
+                    if (expectedFps != null) view.setFrameRate(expectedFps.toInt(), object : MethodChannel.Result {
+                        override fun success(value: Any?) {}
+                        override fun error(code: String, message: String?, details: Any?) {}
+                        override fun notImplemented() {}
+                    })
                     view.setVideoSettings(bitrate, width, height, frameInterval, result)
                 } else {
                     result.success(null)

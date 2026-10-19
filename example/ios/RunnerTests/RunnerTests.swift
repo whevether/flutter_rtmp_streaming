@@ -1,26 +1,40 @@
 import Flutter
-import UIKit
 import XCTest
-
 @testable import rtmp_streaming
 
-// This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
-//
-// See https://developer.apple.com/documentation/xctest for more information about using XCTest.
-
-class RunnerTests: XCTestCase {
-
-    func testGetPlatformVersion() {
+final class RunnerTests: XCTestCase {
+    @MainActor func testNativeCapabilitiesDoNotAdvertiseUnimplementedFeatures() {
         let plugin = HaishinKitPlugin()
-
-        let call = FlutterMethodCall(methodName: "getPlatformVersion", arguments: [])
-
-        let resultExpectation = expectation(description: "result block must be called.")
-        plugin.handle(call) { result in
-            XCTAssertEqual(result as! String, "iOS " + UIDevice.current.systemVersion)
-            resultExpectation.fulfill()
+        let done = expectation(description: "capabilities")
+        plugin.handle(FlutterMethodCall(methodName: "getCapabilities", arguments: nil)) { value in
+            let map = value as! [String: Any]
+            XCTAssertEqual(map["backend"] as? String, "HaishinKit/2.2.5 (SPM)")
+            let features = map["features"] as! [String: Bool]
+            XCTAssertEqual(features["recordingPause"], false)
+            XCTAssertEqual(features["whipBearerToken"], false)
+            XCTAssertEqual(features["screenCapture"], false)
+            done.fulfill()
         }
-        waitForExpectations(timeout: 1)
+        waitForExpectations(timeout: 5)
     }
 
+    @MainActor func testMalformedEncoderSettingsFail() {
+        let plugin = HaishinKitPlugin()
+        let done = expectation(description: "invalid settings")
+        plugin.handle(FlutterMethodCall(methodName: "setVideoSettings", arguments: ["width": 721])) { value in
+            XCTAssertEqual((value as? FlutterError)?.code, "setVideoSettingsError")
+            done.fulfill()
+        }
+        waitForExpectations(timeout: 5)
+    }
+
+    @MainActor func testStopAllWithoutRecordingIsIdempotent() {
+        let plugin = HaishinKitPlugin()
+        let done = expectation(description: "stop idle session")
+        plugin.handle(FlutterMethodCall(methodName: "stopRecordingOrStreaming", arguments: nil)) { value in
+            XCTAssertNil(value)
+            done.fulfill()
+        }
+        waitForExpectations(timeout: 5)
+    }
 }

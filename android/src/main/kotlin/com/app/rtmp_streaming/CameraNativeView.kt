@@ -110,7 +110,7 @@ import java.util.Locale
 class CameraNativeView(
     private var activity: Activity? = null,
     private var enableAudio: Boolean = false,
-    private val preset: ResolutionPreset,
+    private var preset: ResolutionPreset,
     private var cameraName: String,
     private var dartMessenger: DartMessenger? = null,
     viewContext: Context = requireNotNull(activity)
@@ -571,7 +571,8 @@ class CameraNativeView(
 
     override fun onAuthError() {
         activity?.runOnUiThread {
-            dartMessenger?.send(DartMessenger.EventType.ERROR, "Auth error")
+            stopActiveStream()
+            dartMessenger?.send(DartMessenger.EventType.RTMP_STOPPED, "Authentication failed")
         }
     }
 
@@ -1245,6 +1246,7 @@ class CameraNativeView(
                     startRecordOnActivePipeline(filePath)
                     result.success(null)
                 } catch (e: Exception) {
+                    stopActiveStream(restorePreview = true)
                     result.error("videoRecordingFailed", e.message, null)
                 }
             }
@@ -1825,7 +1827,7 @@ class CameraNativeView(
               result.success(null)
             }
             else -> {
-              result.success(null)
+              result.error("unsupportedFilter", "Unknown filter ID: $type", null)
             }
           }
 
@@ -1840,14 +1842,10 @@ class CameraNativeView(
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     fun removeFilter(type: Int?, result: MethodChannel.Result) {
         try {
-          if (type == null) {
-            result.error("removeFilter", "type is empty", null)
-            return
-          }
           spriteGestureController.stopListener()
           val filterToRemove = currentFilter
           val filterType = currentFilterType
-          if (filterToRemove != null && filterType == type) {
+          if (filterToRemove != null && (type == null || filterType == type)) {
             activeGlInterface()?.removeFilter(filterToRemove)
             currentFilter = null
             currentFilterType = null
@@ -2179,6 +2177,12 @@ class CameraNativeView(
             ret["queueCongestionPercent"] = stats?.queueCongestionPercent ?: 0f
             ret["totalBytesOut"] = stats?.totalBytesOut ?: 0L
         }
+        if (currentProtocol != "rtmp") ret.remove("rttMicros")
+        if (stats == null) {
+            ret.remove("bytesOutPerSecond")
+            ret.remove("queueCongestionPercent")
+            ret.remove("totalBytesOut")
+        }
         result.success(ret)
     }
 
@@ -2235,8 +2239,7 @@ class CameraNativeView(
             val render = TextFilterRender()
             val color = colorArgb ?: Color.RED
             // Paint size in bitmap pixels; larger = sharper when mapped 1:1 via setDefaultScale.
-            val density = activity?.resources?.displayMetrics?.density ?: 1f
-            val size = ((fontSize ?: 22.0).toFloat() * density).coerceAtLeast(12f)
+            val size = (fontSize ?: 22.0).toFloat().coerceAtLeast(1f)
             render.setText(text, size, color)
             val encoder = activeGlInterface()?.encoderSize
             val streamW = activeStreamWidth().takeIf { it > 0 }
@@ -2539,6 +2542,35 @@ class CameraNativeView(
             }
         })
         result.success(null)
+    }
+
+    fun setCapturePreset(value: ResolutionPreset, result: MethodChannel.Result) {
+        if (isStreamingNow() || isRecordingNow()) {
+            result.error("invalidState", "Stop streaming and recording before changing capture preset", null)
+            return
+        }
+        preset = value
+        customVideoSize = null
+        encoderSettingsDirty = true
+        if (genericStream != null) stopGenericStreamInternal(restorePreview = false)
+        if (genericCamera.isOnPreview) genericCamera.stopCamera()
+        if (isSurfaceCreated) startPreview(cameraName)
+        result.success(null)
+    }
+
+    fun cameraCapabilityFlags(): Map<String, Boolean> {
+        val source = activeVideoSource()
+        val physicalCamera = source is Camera2Source || source is CameraXSource
+        val characteristics = if (source is Camera2Source) runCatching {
+            val manager = glView.context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            manager.getCameraCharacteristics(source.getCurrentCameraId())
+        }.getOrNull() else null
+        return mapOf("zoom" to physicalCamera, "focus" to physicalCamera,
+            "exposureLock" to (characteristics?.get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true),
+            "whiteBalanceLock" to (characteristics?.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true),
+            "manualExposure" to (characteristics?.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
+                ?.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR) == true),
+            "captureTelemetry" to (source is Camera2Source))
     }
 
     fun getCameraControls(result: MethodChannel.Result) {
@@ -3219,7 +3251,7 @@ class CameraNativeView(
 
     fun stopMultiStreaming(result: MethodChannel.Result) {
         try {
-            stopMultiStreamingInternal(restorePreview = true)
+            stopActiveStream(restorePreview = true)
             result.success(null)
         } catch (e: Exception) {
             result.error("stopMultiStreaming", e.message, null)

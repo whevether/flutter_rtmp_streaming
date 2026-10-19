@@ -1,18 +1,19 @@
 #if canImport(Flutter)
 import Flutter
 #endif
-#if canImport(FlutterMacOS)
-import FlutterMacOS
-#endif
 import HaishinKit
 import RTMPHaishinKit
 import SRTHaishinKit
+import libsrt
+import Logboard
 #if canImport(RTCHaishinKit)
 import RTCHaishinKit
 #endif
 import AVFoundation
+import VideoToolbox
 
-public final class HaishinKitPlugin: NSObject,FlutterPlugin {
+@MainActor
+public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
   private static let instance = HaishinKitPlugin()
   private static var sessionFactoriesRegistered = false
   
@@ -21,7 +22,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     let channel = FlutterMethodChannel(name: "com.rtmp_streaming", binaryMessenger: registrar.messenger())
     registrar.addMethodCallDelegate(instance, channel: channel)
     let id = Int(bitPattern: ObjectIdentifier(instance))
-    print("id: \(id)")
     let eventChannel = FlutterEventChannel(name: "com.rtmp_streaming.eventchannel/\(id)", binaryMessenger: registrar.messenger())
     
     eventChannel.setStreamHandler(instance)
@@ -38,6 +38,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     }
   }
   //订阅消息
+  private var sessionGeneration = 0
   private var subscription: Task<(), Error>? {
     didSet {
       oldValue?.cancel()
@@ -71,17 +72,25 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   #if canImport(RTCHaishinKit)
   // RTC (WHIP / WHEP) — SPM + HaishinKit 2.2.5+ only
   private var rtcSession: (any Session)?
+  private var rtcMonitor: Task<Void, Error>?
   private var rtcStream: (any StreamConvertible)?
   private var whepAudioPlayer: AudioPlayer?
   #endif
   private var currentProtocol: String = "rtmp"
   // 录制流
   private var recorderStream: StreamRecorder?
+  private var recorderErrors: Task<Void, Never>?
   // Multi-streaming endpoints (excludes WHIP/WHEP)
   private var multiEndpoints: [MultiEndpoint] = []
-  //重试次数
-  private var retries: Int = 0
   private var enableAudio: Bool = true
+  private var isRecording = false
+  private var isPlayback = false
+  private var playbackAudioPlayer: AudioPlayer?
+  private var desiredVideoSettings = VideoCodecSettings()
+  private var desiredAudioSettings = AudioCodecSettings()
+  private var explicitVideoSize = false
+  private var telemetryTimer: Timer?
+
   // 插件注册
   private(set) var registrar: FlutterPluginRegistrar?
   
@@ -101,6 +110,9 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   
   private func ensureSessionFactoriesRegistered() async {
     guard !Self.sessionFactoriesRegistered else { return }
+    for name in ["com.haishinkit.HaishinKit", "com.haishinkit.RTMPHaishinKit", "com.haishinkit.SRTHaishinKit", "com.haishinkit.RTCHaishinKit"] {
+      LBLogger.with(name).appender = NullAppender.shared
+    }
     #if canImport(RTCHaishinKit)
     await SessionBuilderFactory.shared.register(HTTPSessionFactory())
     #endif
@@ -109,11 +121,17 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
 
   //销毁所有
   private func dispose()async{
+    telemetryTimer?.invalidate()
+    telemetryTimer = nil
     subscription = nil
+    sessionGeneration += 1
+    if isRecording { _ = await stopVideoRecording() }
     await tearDownMultiEndpoints()
     await tearDownRtcSession()
     await tearDownSrtSession()
+    try? await rtmpConnection?.close()
     rtmpConnection = nil
+    playbackAudioPlayer = nil
     if let newRtmpStream = rtmpStream {
       await mixer?.removeOutput(newRtmpStream)
       if let texture {
@@ -136,6 +154,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   //关闭连接与视频流
   private func stopStreaming()async->FlutterError?{
     do{
+      sessionGeneration += 1
       subscription = nil
       if !multiEndpoints.isEmpty {
         await tearDownMultiEndpoints()
@@ -203,6 +222,8 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
 
   private func tearDownRtcSession() async {
     #if canImport(RTCHaishinKit)
+    rtcMonitor?.cancel()
+    rtcMonitor = nil
     if let stream = rtcStream {
       await mixer?.removeOutput(stream)
       if let texture {
@@ -215,14 +236,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     rtcStream = nil
     whepAudioPlayer = nil
     #endif
-  }
-  //publish
-  private func publish(name: String) async{
-    _ = try? await rtmpStream?.publish(name)
-  }
-  // play
-  private func play(url: String) async{
-    _ = try? await rtmpStream?.play(url)
   }
   //获取可用摄像头
   private func availableCameras() -> [[String: Any]] {
@@ -254,14 +267,14 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     guard let newMixer = mixer else {
       return FlutterError(code: "prepareForVideoStreamingError", message: "mixer empty", details: nil)
     }
-    if enableAudio {
-      await newMixer.attachAudio(isEnable: true)
-    }
+    _ = newMixer // Capture is already prepared by initialize.
     return nil
   }
 
   //初始化 HaishinKit
-  private func initialize(cameraId: String,enableAudio: Bool,resolution: String) async ->[String: Any]?{
+  private func initialize(cameraId: String,enableAudio: Bool,resolution: String) async throws -> [String: Any]? {
+    guard mixer == nil, rtmpStream == nil, texture == nil else { throw ConfigurationError.unsupported }
+    await dispose()
     self.enableAudio = enableAudio
     rtmpConnection = RTMPConnection()
     if let connection = rtmpConnection{
@@ -274,13 +287,15 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       let recorder = StreamRecorder()
       await mixer?.addOutput(recorder, startRunning: true)
       recorderStream = recorder
-      await mixer?.attachAudio(isEnable: enableAudio)
+      try await mixer?.attachAudio(isEnable: enableAudio)
       guard
-        let size: CGSize = await mixer?.attachVideo(resolution: resolution,cameraId: cameraId),
+        let size: CGSize = try await mixer?.attachVideo(resolution: resolution,cameraId: cameraId),
         let registry = registrar?.textures()
       else {
         return nil
       }
+      if !explicitVideoSize { desiredVideoSettings.videoSize = size }
+      try await applySettings(to: stream)
       let eventId = Int(bitPattern: ObjectIdentifier(self))
       if let texture {
         return [
@@ -290,7 +305,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           "previewHeight": size.height
         ]
       } else {
-        print("size \(size.width),\(size.height)")
         let textureResult = HKStreamFlutterTexture(registry: registry)
         // ✅ 关键：设置初始尺寸
         textureResult.bounds = size  // 设置合理的默认值
@@ -298,9 +312,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         texture = textureResult
         mixer?.texture = textureResult
         await rtmpStream?.addOutput(textureResult)
-        print("textureId ssss \(texture?.textureId)")
         
-        print("id111: \(eventId)")
         return [
           "textureId": texture?.textureId,
           "eventId": eventId,
@@ -321,6 +333,10 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     isPlay: Bool?,
     whipToken: String?
   ) async -> FlutterError? {
+    if let token = whipToken, !token.isEmpty {
+      return FlutterError(code: "unsupportedOperation", message: "HaishinKit 2.2.5 cannot inject WHIP/WHEP Bearer headers", details: nil)
+    }
+    isPlayback = isPlay == true || protocolName == "whep"
     let protocolLower = protocolName.lowercased()
     switch protocolLower {
     case "rtsp", "udp":
@@ -390,42 +406,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       guard let newName = name else {
         return FlutterError(code: "startVideoStreamingError", message: "publish name error", details: nil)
       }
-      retries = 0
-      subscription = Task { [weak self] in
-        guard let self else { return }
-        for await status in await newRtmpConnection.status {
-          print("connect status: \(status.code)")
-          switch status.code {
-          case RTMPConnection.Code.connectSuccess.rawValue:
-            if let isPlay {
-              Task { await self.play(url: newName) }
-            } else {
-              Task { await self.publish(name: newName) }
-            }
-            self.emitEvent(["eventType": "success",
-                             "errorDescription": "connection success"])
-          case RTMPConnection.Code.connectFailed.rawValue:
-            guard retries <= 3 else {
-              self.emitEvent(["eventType": "error",
-                               "errorDescription": "connection failed " + status.code])
-              return
-            }
-            retries += 1
-            try await Task.sleep(nanoseconds: UInt64(pow(2.0, Double(retries)) * 1_000_000_000))
-            try await newRtmpConnection.connect(newUrl)
-            self.emitEvent(["eventType": "rtmp_retry",
-                             "errorDescription": "connection failed " + status.code])
-          case RTMPConnection.Code.connectClosed.rawValue:
-            self.emitEvent(["eventType": "camera_closing",
-                             "errorDescription": "connection error " + status.code])
-          default:
-            self.emitEvent(["eventType": "error",
-                             "errorDescription": "connection error " + status.code])
-            break
-          }
-        }
-      }
-      await setVideoSettings(
+      if !isPlayback, let error = await setVideoSettings(
         bitrate: frameRate,
         width: nil,
         height: nil,
@@ -433,11 +414,26 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         profileLevel: nil,
         expectedFrameRate: nil,
         bitRateMode: nil
-      )
+      ) { return error }
       
       try await newRtmpConnection.connect(newUrl)
+      guard let stream = rtmpStream else { throw ConfigurationError.invalidValue }
+      if isPlay == true { _ = try await stream.play(newName) }
+      else { _ = try await stream.publish(newName) }
+      subscription = Task { [weak self] in
+        for await status in await newRtmpConnection.status {
+          guard let self, !Task.isCancelled else { return }
+          if [RTMPConnection.Code.connectClosed.rawValue, RTMPConnection.Code.connectFailed.rawValue].contains(status.code) {
+            self.emitEvent(["eventType": "rtmp_stopped", "errorDescription": "RTMP disconnected"])
+            _ = await self.stopStreaming()
+            return
+          }
+        }
+      }
+      emitEvent(["eventType": "success", "errorDescription": "Connected"])
       return nil
     } catch {
+      _ = await stopStreaming()
       emitEvent(["eventType" : "rtmp_stopped",
                   "errorDescription" : "rtmp disconnected"])
       return FlutterError(code: "startVideoStreamingError", message: "catch error", details: nil)
@@ -459,9 +455,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       try? await rtmpConnection?.close()
       await ensureSessionFactoriesRegistered()
 
-      // whipToken is accepted for API parity; RTCHaishinKit 2.2.5 HTTPSession
-      // does not yet expose Authorization / Bearer header injection.
-      _ = whipToken
+      // Token support is checked before creating or tearing down sessions.
 
       guard let sessionUrl = URL(string: url),
             let scheme = sessionUrl.scheme?.lowercased(),
@@ -488,8 +482,9 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       rtcStream = stream
 
       if mode == .publish {
+        try await applySettings(to: stream)
         await mixer?.addOutput(stream, startRunning: false)
-        await setVideoSettings(
+        if let error = await setVideoSettings(
           bitrate: frameRate,
           width: nil,
           height: nil,
@@ -497,7 +492,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           profileLevel: nil,
           expectedFrameRate: nil,
           bitRateMode: nil
-        )
+        ) { await tearDownRtcSession(); return error }
       } else {
         if let texture {
           await stream.addOutput(texture)
@@ -507,15 +502,18 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         await stream.attachAudioPlayer(player)
       }
 
+      sessionGeneration += 1
+      let generation = sessionGeneration
       subscription = Task { [weak self] in
         guard let self else { return }
         for await readyState in await session.readyState {
+          guard !Task.isCancelled, self.sessionGeneration == generation else { return }
           switch readyState {
           case .open:
             self.emitEvent(["eventType": "success",
                              "errorDescription": "connection success"])
           case .closed:
-            self.emitEvent(["eventType": "camera_closing",
+            self.emitEvent(["eventType": "rtmp_stopped",
                              "errorDescription": "\(protocolName) closed"])
           default:
             break
@@ -524,8 +522,24 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       }
 
       try await session.connect { [weak self] in
-        self?.emitEvent(["eventType": "rtmp_stopped",
-                          "errorDescription": "\(protocolName) disconnected"])
+        Task { @MainActor in
+          guard let self, self.sessionGeneration == generation else { return }
+          self.emitEvent(["eventType": "rtmp_stopped", "errorDescription": "\(protocolName) disconnected"])
+        }
+      }
+      rtcMonitor = Task { [weak self] in
+        var connectedOnce = false
+        let deadline = Date().addingTimeInterval(30)
+        while !Task.isCancelled {
+          try await Task.sleep(nanoseconds: 1_000_000_000)
+          guard let self, !Task.isCancelled, self.sessionGeneration == generation else { return }
+          if await session.connected { connectedOnce = true }
+          else if connectedOnce || Date() >= deadline {
+            self.emitEvent(["eventType": "rtmp_stopped", "errorDescription": "RTC connection lost or timed out"])
+            await self.tearDownRtcSession()
+            return
+          }
+        }
       }
       return nil
     } catch {
@@ -569,7 +583,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       srtStream = stream
       await mixer?.addOutput(stream, startRunning: false)
 
-      await setVideoSettings(
+      if !isPlayback, let error = await setVideoSettings(
         bitrate: frameRate,
         width: nil,
         height: nil,
@@ -577,13 +591,14 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         profileLevel: nil,
         expectedFrameRate: nil,
         bitRateMode: nil
-      )
+      ) { await tearDownSrtSession(); return error }
 
       for option in parsed.preOptions {
         try await connection.setSocketOption(option)
       }
       try await connection.connect(parsed.connectURL)
       await stream.publish()
+      subscription = monitorSrt(connection, destinationId: nil)
       emitEvent(["eventType": "success",
                  "errorDescription": "connection success"])
       return nil
@@ -604,10 +619,23 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     destinations: [[String: Any]],
     frameRate: NSNumber
   ) async -> FlutterError? {
+    guard !destinations.isEmpty else { return FlutterError(code: "invalidArgument", message: "No destinations", details: nil) }
+    var ids = Set<String>()
+    for (index, dest) in destinations.enumerated() {
+      let proto = (dest["protocol"] as? String) ?? "rtmp"
+      let id = (dest["id"] as? String) ?? "dest_\(index)"
+      guard let url = dest["url"] as? String, let uri = URL(string: url),
+            uri.host != nil, ["rtmp", "srt"].contains(proto),
+            (proto == "rtmp" ? ["rtmp", "rtmps"].contains(uri.scheme ?? "") : uri.scheme == "srt"),
+            !id.isEmpty, ids.insert(id).inserted else {
+        return FlutterError(code: "invalidArgument", message: "Invalid destination URL, protocol or duplicate ID", details: id)
+      }
+    }
     await tearDownMultiEndpoints()
     await tearDownSrtSession()
     await tearDownRtcSession()
     try? await rtmpConnection?.close()
+    desiredVideoSettings.bitRate = frameRate.intValue
 
     for (index, dest) in destinations.enumerated() {
       guard let url = dest["url"] as? String else {
@@ -621,11 +649,13 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           details: nil
         )
       }
-      let id = (dest["id"] as? String) ?? "\(protocolName)-\(index)"
+      let id = (dest["id"] as? String) ?? "dest_\(index)"
       let endpoint = MultiEndpoint(id: id, protocolName: protocolName)
+      multiEndpoints.append(endpoint)
       do {
         if protocolName == "srt" {
           guard let parsed = SrtURLHelper.parse(url) else {
+            await tearDownMultiEndpoints()
             return FlutterError(
               code: "startMultiStreamingError",
               message: "Invalid SRT URL. Use e.g. srt://host:10080?streamid=#!::r=live/livestream,m=publish",
@@ -636,14 +666,17 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           let stream = SRTStream(connection: connection)
           endpoint.srtConnection = connection
           endpoint.srtStream = stream
-          await mixer?.addOutput(stream, startRunning: false)
+          try await applySettings(to: stream)
+        await mixer?.addOutput(stream, startRunning: false)
           for option in parsed.preOptions {
             try await connection.setSocketOption(option)
           }
           try await connection.connect(parsed.connectURL)
           await stream.publish()
+          endpoint.statusTask = monitorSrt(connection, destinationId: id)
         } else {
           guard let uri = URL(string: url), let name = uri.pathComponents.last else {
+            await tearDownMultiEndpoints()
             return FlutterError(code: "startMultiStreamingError", message: "Invalid RTMP URL", details: nil)
           }
           var bits = url.components(separatedBy: "/")
@@ -653,16 +686,27 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           let stream = RTMPStream(connection: connection)
           endpoint.rtmpConnection = connection
           endpoint.rtmpStream = stream
-          await mixer?.addOutput(stream, startRunning: false)
+          try await applySettings(to: stream)
+        await mixer?.addOutput(stream, startRunning: false)
           try await connection.connect(connectUrl)
-          _ = try? await stream.publish(name)
+          _ = try await stream.publish(name)
+          endpoint.statusTask = Task { [weak self, weak endpoint] in
+            for await status in await connection.status {
+              guard !Task.isCancelled, let self, let endpoint else { return }
+              if [RTMPConnection.Code.connectClosed.rawValue, RTMPConnection.Code.connectFailed.rawValue].contains(status.code) {
+                self.emitEvent(["eventType": "rtmp_stopped", "destinationId": endpoint.id,
+                  "errorDescription": "Destination disconnected"])
+                _ = await self.stopStreamingDestination(id: endpoint.id)
+                return
+              }
+            }
+          }
         }
         emitEvent([
           "eventType": "success",
           "errorDescription": "connection success",
-          "streamId": id
+          "destinationId": id
         ])
-        multiEndpoints.append(endpoint)
       } catch {
         await tearDownMultiEndpoints()
         return FlutterError(
@@ -673,8 +717,25 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       }
     }
     currentProtocol = "multi"
-    _ = frameRate
     return nil
+  }
+
+  private func monitorSrt(_ connection: SRTConnection, destinationId: String?) -> Task<(), Error> {
+    Task { [weak self] in
+      while !Task.isCancelled {
+        try await Task.sleep(nanoseconds: 1_000_000_000)
+        guard let self, !Task.isCancelled else { return }
+        let stateOption = SRTSocketOption.Name(rawValue: "state", symbol: SRTO_STATE, restriction: nil, type: .int32)
+        let state = try? await connection.getSocketOption(stateOption)
+        if state?.intValue != Int(SRTS_CONNECTED.rawValue) {
+          var event: [String: Any] = ["eventType": "rtmp_stopped", "errorDescription": "SRT disconnected"]
+          if let destinationId { event["destinationId"] = destinationId }
+          self.emitEvent(event)
+          if let destinationId { _ = await self.stopStreamingDestination(id: destinationId) }
+          return
+        }
+      }
+    }
   }
 
   private func stopStreamingDestination(id: String) async -> FlutterError? {
@@ -695,6 +756,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
     try? await endpoint.rtmpConnection?.close()
     if multiEndpoints.isEmpty {
       currentProtocol = "rtmp"
+      emitEvent(["eventType": "rtmp_stopped", "errorDescription": "All destinations stopped"])
     }
     return nil
   }
@@ -703,8 +765,37 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private func startVideoRecording(filePath: String) async -> FlutterError?{
     do{
       guard let newRecorderStream = recorderStream else { return FlutterError(code: "startVideoRecordingError", message: "recorder Stream error", details: nil)}
-      _ = try await newRecorderStream.startRecording(URL(fileURLWithPath: filePath))
-      print("startVideoRecording:\(filePath)")
+      guard !isRecording else { return FlutterError(code: "alreadyRecording", message: "Recording is active", details: nil) }
+      guard desiredVideoSettings.bitRateMode == .average else {
+        return FlutterError(code: "unsupportedOperation", message: "Recording supports average bit rate mode only", details: nil)
+      }
+      var settings = StreamRecorder.defaultSettings
+      var compression: [String: any Sendable] = [
+        AVVideoAverageBitRateKey: desiredVideoSettings.bitRate,
+        AVVideoMaxKeyFrameIntervalDurationKey: Int(desiredVideoSettings.maxKeyFrameIntervalDuration),
+        AVVideoProfileLevelKey: desiredVideoSettings.profileLevel
+      ]
+      if let frameRate = desiredVideoSettings.expectedFrameRate {
+        compression[AVVideoExpectedSourceFrameRateKey] = frameRate
+      }
+      settings[.video]?[AVVideoWidthKey] = Int(desiredVideoSettings.videoSize.width)
+      settings[.video]?[AVVideoHeightKey] = Int(desiredVideoSettings.videoSize.height)
+      settings[.video]?[AVVideoCodecKey] = desiredVideoSettings.profileLevel.contains("HEVC") ? AVVideoCodecType.hevc : AVVideoCodecType.h264
+      settings[.video]?[AVVideoCompressionPropertiesKey] = compression
+      settings[.audio]?[AVEncoderBitRateKey] = desiredAudioSettings.bitRate
+      if !enableAudio { settings.removeValue(forKey: .audio) }
+      let errors = await newRecorderStream.error
+      try await newRecorderStream.startRecording(URL(fileURLWithPath: filePath), settings: settings)
+      isRecording = true
+      recorderErrors?.cancel()
+      recorderErrors = Task { [weak self] in
+        for await error in errors {
+          guard !Task.isCancelled, let self else { return }
+          _ = await self.stopVideoRecording()
+          self.emitEvent(["eventType": "recording_stopped", "errorDescription": String(describing: error)])
+          return
+        }
+      }
       return nil
     }catch{
       return FlutterError(code: "startVideoRecordingError", message: "catch error", details: nil)
@@ -712,13 +803,17 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   }
   //停止录制
   private func stopVideoRecording()async->FlutterError?{
+    guard isRecording else { return nil }
+    recorderErrors?.cancel()
+    recorderErrors = nil
     do{
       guard let newRecorderStream = recorderStream else { return FlutterError(code: "stopVideoRecordingError", message: "recorder Stream error", details: nil)}
       _ = try await newRecorderStream.stopRecording()
+      isRecording = false
       return nil
     }catch{
-      print("stopVideoRecordingError",error)
-      return FlutterError(code: "stopVideoRecordingError", message: "catch error", details: nil)
+      isRecording = await recorderStream?.isRecording ?? false
+      return FlutterError(code: "stopVideoRecordingError", message: error.localizedDescription, details: nil)
     }
   }
   //直播与录制到本地
@@ -742,6 +837,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       }
       let startVideoRecordingRes = await startVideoRecording(filePath: filePath)
       if startVideoRecordingRes != nil {
+        _ = await stopStreaming()
         return startVideoRecordingRes
       }
       return nil
@@ -764,22 +860,20 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   //暂停直播
   private func pauseStream()async->FlutterError?{
     do{
-      guard let newRtmpStream = rtmpStream else { return FlutterError(code: "pauseStreamError", message: "rtmp Stream error", details: nil)}
+      guard isPlayback && currentProtocol == "rtmp", let newRtmpStream = rtmpStream else { return FlutterError(code: "unsupportedOperation", message: "rtmp Stream error", details: nil)}
       _ = try await newRtmpStream.pause(true)
       return nil
     }catch{
-      print("pauseStream",error)
       return FlutterError(code: "pauseStreamError", message: "catch error", details: nil)
     }
   }
   //恢复直播
   private func resumeStream()async->FlutterError?{
     do{
-      guard let newRtmpStream = rtmpStream else { return FlutterError(code: "resumeStreamError", message: "rtmp Stream error", details: nil)}
+      guard isPlayback && currentProtocol == "rtmp", let newRtmpStream = rtmpStream else { return FlutterError(code: "unsupportedOperation", message: "rtmp Stream error", details: nil)}
       _ = try await newRtmpStream.pause(false)
       return nil
     }catch{
-      print("resumeStream",error)
       return FlutterError(code: "resumeStream", message: "catch error", details: nil)
     }
   }
@@ -787,13 +881,13 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private func onFlashLight() -> FlutterError? {
     
     do {
-      guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back), device.hasTorch else {
+      guard let device = mixer?.activeVideoDevice, device.hasTorch else {
         
         return FlutterError(code: "onFlashLight", message: "device error", details: nil)
       }
       try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
       try device.setTorchModeOn(level: AVCaptureDevice.maxAvailableTorchLevel)
-      device.unlockForConfiguration()
       return nil
     } catch {
       return FlutterError(code: "onFlashLight", message: "catch error", details: nil)
@@ -803,7 +897,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   private func offFlashLight() -> FlutterError? {
     
     do {
-      guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back), device.hasTorch else { return FlutterError(code: "offFlashLight", message: "device error", details: nil) }
+      guard let device = mixer?.activeVideoDevice, device.hasTorch else { return FlutterError(code: "offFlashLight", message: "device error", details: nil) }
       try device.lockForConfiguration()
       device.torchMode = .off
       device.unlockForConfiguration()
@@ -841,233 +935,124 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
   
   //获取直播流信息
   private func getStreamStatistics() async -> [String: Any?] {
-    do {
-      guard let newTexture = texture else {
-        return [:]
-      }
-      let hasAudio = await mixer?.getHasAudio() ?? true
-      let hasVideo = await mixer?.getHasVideo() ?? true
-      if currentProtocol == "srt", let stream = srtStream {
-        let bitRate = await stream.videoSettings.bitRate
-        return [
-          "fps": 0,
-          "cacheSize": 0,
-          "width": newTexture.bounds.width,
-          "height": newTexture.bounds.height,
-          "bitrate": bitRate,
-          "bytesSend": 0,
-          "sentAudioFrames": nil,
-          "sentVideoFrames": nil,
-          "droppedAudioFrames": nil,
-          "droppedVideoFrames": nil,
-          "isAudioMuted": !hasAudio,
-          "isVideoMuted": !hasVideo
-        ]
-      }
-      #if canImport(RTCHaishinKit)
-      if (currentProtocol == "whip" || currentProtocol == "whep"), let stream = rtcStream {
-        let bitRate = await stream.videoSettings.bitRate
-        return [
-          "fps": 0,
-          "cacheSize": 0,
-          "width": newTexture.bounds.width,
-          "height": newTexture.bounds.height,
-          "bitrate": bitRate,
-          "bytesSend": 0,
-          "sentAudioFrames": nil,
-          "sentVideoFrames": nil,
-          "droppedAudioFrames": nil,
-          "droppedVideoFrames": nil,
-          "isAudioMuted": !hasAudio,
-          "isVideoMuted": !hasVideo
-        ]
-      }
-      #endif
-      guard let newRtmpStream = rtmpStream else {
-        return [:]
-      }
-      let info = await newRtmpStream.info
-      let currentFps = await newRtmpStream.currentFPS
-      let bitRate = await newRtmpStream.videoSettings.bitRate
-      return [
-        "fps": currentFps,
-        "cacheSize": info.byteCount,
-        "width": newTexture.bounds.width,
-        "height": newTexture.bounds.height,
-        "bitrate": bitRate > 0 ? bitRate : info.currentBytesPerSecond * 8,
-        "bytesSend": info.byteCount,
-        "sentAudioFrames": nil,
-        "sentVideoFrames": nil,
-        "droppedAudioFrames": nil,
-        "droppedVideoFrames": nil,
-        "isAudioMuted": !hasAudio,
-        "isVideoMuted": !hasVideo
-      ]
-    } catch {
-      return [:]
+    let first = multiEndpoints.first
+    let activeRtmp = currentProtocol == "multi" ? first?.rtmpStream : (currentProtocol == "rtmp" ? rtmpStream : nil)
+    let activeSrt = currentProtocol == "multi" ? first?.srtStream : (currentProtocol == "srt" ? srtStream : nil)
+    var active: (any StreamConvertible)? = activeRtmp
+    if let activeSrt { active = activeSrt }
+    #if canImport(RTCHaishinKit)
+    if currentProtocol == "whip" || currentProtocol == "whep" { active = rtcStream }
+    #endif
+    guard let active else { return [:] }
+    let settings = await active.videoSettings
+    let hasAudio = await mixer?.getHasAudio() ?? true
+    let hasVideo = await mixer?.getHasVideo() ?? true
+    var stats: [String: Any?] = [
+      "width": Int(settings.videoSize.width), "height": Int(settings.videoSize.height),
+      "bitrate": settings.bitRate, "isAudioMuted": !hasAudio, "isVideoMuted": !hasVideo
+    ]
+    if let activeRtmp {
+      let info = await activeRtmp.info
+      stats["fps"] = await activeRtmp.currentFPS
+      stats["bytesSend"] = info.byteCount
+      stats["bytesOutPerSecond"] = info.currentBytesPerSecond
     }
+    let connection = currentProtocol == "multi" ? first?.srtConnection : srtConnection
+    if activeSrt != nil, let connection, let performance = await connection.performanceData {
+      stats["bytesSend"] = Int64(clamping: performance.byteSentTotal)
+      stats["queueBytesOut"] = Int(performance.byteSndBuf)
+      stats["rttMicros"] = Int(performance.msRTT * 1000)
+    }
+    return stats
   }
   //设置音频
-  private func setAudioSettings(bitrate: NSNumber) async -> FlutterError? {
-    do {
-      if currentProtocol == "srt", let stream = srtStream {
-        var audioSettings = await stream.audioSettings
-        audioSettings.bitRate = bitrate.intValue
-        _ = try? await stream.setAudioSettings(audioSettings)
-        return nil
-      }
-      #if canImport(RTCHaishinKit)
-      if (currentProtocol == "whip" || currentProtocol == "whep"), let stream = rtcStream {
-        var audioSettings = await stream.audioSettings
-        audioSettings.bitRate = bitrate.intValue
-        _ = try? await stream.setAudioSettings(audioSettings)
-        return nil
-      }
-      #endif
-      guard let newRtmpStream = rtmpStream else {
-        return FlutterError(code: "setAudioSettingsError", message: "rtmp Stream error", details: nil)
-      }
-      var audioSettings = await newRtmpStream.audioSettings
-      audioSettings.bitRate = bitrate.intValue
-      _ = try? await newRtmpStream.setAudioSettings(audioSettings)
-      return nil
-    } catch {
-      return FlutterError(code: "setAudioSettingsError", message: "catch error", details: nil)
+  private func configuredStreams() -> [any StreamConvertible] {
+    var streams: [any StreamConvertible] = []
+    if let stream = rtmpStream { streams.append(stream) }
+    if let stream = srtStream { streams.append(stream) }
+    #if canImport(RTCHaishinKit)
+    if let stream = rtcStream, currentProtocol != "whep" { streams.append(stream) }
+    #endif
+    for endpoint in multiEndpoints {
+      if let stream = endpoint.rtmpStream { streams.append(stream) }
+      if let stream = endpoint.srtStream { streams.append(stream) }
     }
-  }
-  /// Match encoder videoSize to offscreen canvas so stream/preview don't letterbox after overlay.
-  private func syncStreamVideoSizeToOverlayCanvas(_ mixer: MediaMixerHandler) async {
-    let size = await mixer.overlayOutputSize()
-    guard size.width > 1, size.height > 1 else { return }
-    _ = await setVideoSettings(
-      bitrate: nil,
-      width: NSNumber(value: Double(size.width)),
-      height: NSNumber(value: Double(size.height)),
-      frameInterval: nil,
-      profileLevel: nil,
-      expectedFrameRate: nil,
-      bitRateMode: nil
-    )
+    return streams
   }
 
-  //设置视频（含 HaishinKit 2.2.1+ 码率模式、2.2.2+ expectedFrameRate → RTMP onMetaData framerate）
+  private func applySettings(to stream: any StreamConvertible) async throws {
+    try await stream.setVideoSettings(desiredVideoSettings)
+    var audio = await stream.audioSettings
+    audio.bitRate = desiredAudioSettings.bitRate
+    try await stream.setAudioSettings(audio)
+  }
+
+  private func setAudioSettings(bitrate: NSNumber) async -> FlutterError? {
+    guard bitrate.intValue > 0 else { return FlutterError(code: "invalidArgument", message: "bitrate must be positive", details: nil) }
+    do {
+      var settings = desiredAudioSettings
+      settings.bitRate = bitrate.intValue
+      for stream in configuredStreams() {
+        var audio = await stream.audioSettings
+        audio.bitRate = settings.bitRate
+        try await stream.setAudioSettings(audio)
+      }
+      desiredAudioSettings = settings
+      return nil
+    } catch {
+      return FlutterError(code: "setAudioSettingsError", message: error.localizedDescription, details: nil)
+    }
+  }
+
   private func setVideoSettings(
-    bitrate: NSNumber?,
-    width: NSNumber?,
-    height: NSNumber?,
-    frameInterval: NSNumber?,
-    profileLevel: String?,
-    expectedFrameRate: NSNumber?,
-    bitRateMode: String?
+    bitrate: NSNumber?, width: NSNumber?, height: NSNumber?, frameInterval: NSNumber?,
+    profileLevel: String?, expectedFrameRate: NSNumber?, bitRateMode: String?
   ) async -> FlutterError? {
     do {
-      if currentProtocol == "srt", let stream = srtStream {
-        var videoSettings = await stream.videoSettings
-        if let bitrate {
-          videoSettings.bitRate = bitrate.intValue
-        }
-        if let width, let height {
-          videoSettings.videoSize = CGSize(width: .init(width.intValue), height: .init(height.intValue))
-        }
-        if let frameInterval {
-          videoSettings.maxKeyFrameIntervalDuration = frameInterval.int32Value
-        }
-        if let profileLevel {
-          videoSettings.profileLevel = ProfileLevel(rawValue: profileLevel)?.kVTProfileLevel ?? ProfileLevel.H264_Baseline_AutoLevel.kVTProfileLevel
-        }
-        if let expectedFrameRate {
-          videoSettings.expectedFrameRate = expectedFrameRate.doubleValue
-        }
-        try await stream.setVideoSettings(videoSettings)
-        return nil
-      }
-      #if canImport(RTCHaishinKit)
-      if (currentProtocol == "whip" || currentProtocol == "whep"), let stream = rtcStream {
-        var videoSettings = await stream.videoSettings
-        if let bitrate {
-          videoSettings.bitRate = bitrate.intValue
-        }
-        if let width, let height {
-          videoSettings.videoSize = CGSize(width: .init(width.intValue), height: .init(height.intValue))
-        }
-        if let frameInterval {
-          videoSettings.maxKeyFrameIntervalDuration = frameInterval.int32Value
-        }
-        if let profileLevel {
-          videoSettings.profileLevel = ProfileLevel(rawValue: profileLevel)?.kVTProfileLevel ?? ProfileLevel.H264_Baseline_AutoLevel.kVTProfileLevel
-        }
-        if let expectedFrameRate {
-          videoSettings.expectedFrameRate = expectedFrameRate.doubleValue
-        }
-        if let bitRateMode {
-          switch bitRateMode.lowercased() {
-          case "average":
-            videoSettings.bitRateMode = .average
-          case "constant":
-            if #available(iOS 16.0, *) {
-              videoSettings.bitRateMode = .constant
-            } else {
-              return FlutterError(code: "setVideoSettingsError", message: "constant bit rate requires iOS 16+", details: nil)
-            }
-          case "variable":
-            if #available(iOS 26.0, *) {
-              videoSettings.bitRateMode = .variable
-            } else {
-              return FlutterError(code: "setVideoSettingsError", message: "variable bit rate requires iOS 26+", details: nil)
-            }
-          default:
-            break
-          }
-        }
-        try await stream.setVideoSettings(videoSettings)
-        return nil
-      }
-      #endif
-      guard let newRtmpStream = rtmpStream else {
-        return FlutterError(code: "setVideoSettingsError", message: "rtmp Stream error", details: nil)
-      }
-      var videoSettings = await newRtmpStream.videoSettings
+      var settings = desiredVideoSettings
       if let bitrate {
-        videoSettings.bitRate = bitrate.intValue
+        guard bitrate.intValue > 0 else { throw ConfigurationError.invalidValue }
+        settings.bitRate = bitrate.intValue
       }
+      guard (width == nil) == (height == nil) else { throw ConfigurationError.invalidValue }
       if let width, let height {
-        videoSettings.videoSize = CGSize(width: .init(width.intValue), height: .init(height.intValue))
+        guard width.intValue > 0, height.intValue > 0, width.intValue % 2 == 0, height.intValue % 2 == 0 else { throw ConfigurationError.invalidValue }
+        settings.videoSize = CGSize(width: width.intValue, height: height.intValue)
       }
       if let frameInterval {
-        videoSettings.maxKeyFrameIntervalDuration = frameInterval.int32Value
+        guard frameInterval.intValue > 0 else { throw ConfigurationError.invalidValue }
+        settings.maxKeyFrameIntervalDuration = frameInterval.int32Value
       }
       if let profileLevel {
-        videoSettings.profileLevel = ProfileLevel(rawValue: profileLevel)?.kVTProfileLevel ?? ProfileLevel.H264_Baseline_AutoLevel.kVTProfileLevel
+        guard let profile = ProfileLevel(rawValue: profileLevel) else { throw ConfigurationError.invalidValue }
+        settings.profileLevel = profile.kVTProfileLevel
       }
       if let expectedFrameRate {
-        videoSettings.expectedFrameRate = expectedFrameRate.doubleValue
+        guard expectedFrameRate.doubleValue.isFinite, expectedFrameRate.doubleValue > 0 else { throw ConfigurationError.invalidValue }
+        settings.expectedFrameRate = expectedFrameRate.doubleValue
       }
       if let bitRateMode {
-        switch bitRateMode.lowercased() {
-        case "average":
-          videoSettings.bitRateMode = .average
+        switch bitRateMode {
+        case "average": settings.bitRateMode = .average
         case "constant":
-          if #available(iOS 16.0, *) {
-            videoSettings.bitRateMode = .constant
-          } else {
-            return FlutterError(code: "setVideoSettingsError", message: "constant bit rate requires iOS 16+", details: nil)
-          }
+          if #available(iOS 16.0, *) { settings.bitRateMode = .constant }
+          else { throw ConfigurationError.unsupported }
         case "variable":
-          if #available(iOS 26.0, *) {
-            videoSettings.bitRateMode = .variable
-          } else {
-            return FlutterError(code: "setVideoSettingsError", message: "variable bit rate requires iOS 26+", details: nil)
-          }
-        default:
-          break
+          if #available(iOS 26.0, *) { settings.bitRateMode = .variable }
+          else { throw ConfigurationError.unsupported }
+        default: throw ConfigurationError.invalidValue
         }
       }
-      try await newRtmpStream.setVideoSettings(videoSettings)
+      for stream in configuredStreams() { try await stream.setVideoSettings(settings) }
+      desiredVideoSettings = settings
+      if width != nil { explicitVideoSize = true }
       return nil
     } catch {
       return FlutterError(code: "setVideoSettingsError", message: error.localizedDescription, details: nil)
     }
   }
+
+  private enum ConfigurationError: Error { case invalidValue, unsupported }
 
   #if os(iOS)
   private func setMultitaskingCameraAccessEnabled(enabled: Bool) async -> FlutterError? {
@@ -1075,16 +1060,233 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       return FlutterError(code: "setMultitaskingCameraAccessEnabledError", message: "mixer empty", details: nil)
     }
     if #available(iOS 17.0, *) {
-      await newMixer.setMultitaskingCameraAccessEnabled(enabled)
-      return nil
+      if await newMixer.setMultitaskingCameraAccessEnabled(enabled) { return nil }
+      return FlutterError(code: "unsupportedOperation", message: "This device does not support multitasking camera access", details: nil)
     }
     return FlutterError(code: "setMultitaskingCameraAccessEnabledError", message: "Requires iOS 17+", details: nil)
   }
   #endif
+  private static func supportsHevcEncoder() -> Bool {
+    guard #available(iOS 17.4, *) else { return false }
+    var properties: CFDictionary?
+    let specification = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true] as CFDictionary
+    return VTCopySupportedPropertyDictionaryForEncoder(width: 1280, height: 720,
+      codecType: kCMVideoCodecType_HEVC, encoderSpecification: specification,
+      encoderIDOut: nil, supportedPropertiesOut: &properties) == noErr
+  }
+
+  private func cameraControl(_ call: FlutterMethodCall) -> Any? {
+    guard let device = mixer?.activeVideoDevice else {
+      return FlutterError(code: "noCamera", message: "No active capture device", details: nil)
+    }
+    let args = call.arguments as? [String: Any] ?? [:]
+    do {
+      try device.lockForConfiguration()
+      defer { device.unlockForConfiguration() }
+      switch call.method {
+      case "getCameraControls":
+        return ["zoom": device.videoZoomFactor, "minZoom": device.minAvailableVideoZoomFactor,
+          "maxZoom": device.maxAvailableVideoZoomFactor,
+          "autoFocus": device.focusMode != .locked, "exposure": Int(device.exposureTargetBias),
+          "torch": device.torchMode == .on]
+      case "setManualExposure":
+        if args["iso"] == nil || args["iso"] is NSNull {
+          guard args["exposureTimeNanos"] == nil || args["exposureTimeNanos"] is NSNull,
+            device.isExposureModeSupported(.continuousAutoExposure) else { throw ConfigurationError.invalidValue }
+          device.exposureMode = .continuousAutoExposure
+        } else {
+          guard device.isExposureModeSupported(.custom), let iso = args["iso"] as? NSNumber,
+            let nanos = args["exposureTimeNanos"] as? NSNumber,
+            iso.floatValue >= device.activeFormat.minISO, iso.floatValue <= device.activeFormat.maxISO,
+            nanos.int64Value > 0 else { throw ConfigurationError.invalidValue }
+          let duration = CMTime(value: nanos.int64Value, timescale: 1_000_000_000)
+          guard CMTimeCompare(duration, device.activeFormat.minExposureDuration) >= 0,
+            CMTimeCompare(duration, device.activeFormat.maxExposureDuration) <= 0 else { throw ConfigurationError.invalidValue }
+          device.setExposureModeCustom(duration: duration, iso: iso.floatValue)
+        }
+      case "setZoom":
+        guard let n = args["zoom"] as? NSNumber, n.doubleValue.isFinite,
+          CGFloat(n.doubleValue) >= device.minAvailableVideoZoomFactor,
+          CGFloat(n.doubleValue) <= device.maxAvailableVideoZoomFactor else { throw ConfigurationError.invalidValue }
+        device.videoZoomFactor = CGFloat(n.doubleValue)
+      case "setAutoFocus":
+        guard let enabled = args["enabled"] as? Bool else { throw ConfigurationError.invalidValue }
+        let mode: AVCaptureDevice.FocusMode = enabled ? .continuousAutoFocus : .locked
+        guard device.isFocusModeSupported(mode) else { throw ConfigurationError.unsupported }
+        device.focusMode = mode
+      case "tapToFocus", "tapToMeter":
+        let x = (args["x"] as? NSNumber)?.doubleValue ?? 0.5
+        let y = (args["y"] as? NSNumber)?.doubleValue ?? 0.5
+        guard x.isFinite, y.isFinite, (0...1).contains(x), (0...1).contains(y) else { throw ConfigurationError.invalidValue }
+        let point = mixer?.captureDevicePoint(x: x, y: y) ?? CGPoint(x: x, y: y)
+        if call.method == "tapToFocus" {
+          guard device.isFocusPointOfInterestSupported, device.isFocusModeSupported(.autoFocus) else { return false }
+          device.focusPointOfInterest = point
+          device.focusMode = .autoFocus
+        } else {
+          guard (args["mode"] as? String ?? "exposure") == "exposure",
+            device.isExposurePointOfInterestSupported, device.isExposureModeSupported(.continuousAutoExposure) else { return false }
+          device.exposurePointOfInterest = point
+          device.exposureMode = .continuousAutoExposure
+        }
+        return true
+      case "lockExposure", "unlockExposure":
+        let mode: AVCaptureDevice.ExposureMode = call.method == "lockExposure" ? .locked : .continuousAutoExposure
+        guard device.isExposureModeSupported(mode) else { throw ConfigurationError.unsupported }
+        device.exposureMode = mode
+        return call.method == "lockExposure" ? true : nil
+      case "isExposureLocked": return device.exposureMode == .locked
+      case "lockWhiteBalance", "unlockWhiteBalance":
+        let mode: AVCaptureDevice.WhiteBalanceMode = call.method == "lockWhiteBalance" ? .locked : .continuousAutoWhiteBalance
+        guard device.isWhiteBalanceModeSupported(mode) else { throw ConfigurationError.unsupported }
+        device.whiteBalanceMode = mode
+        return call.method == "lockWhiteBalance" ? true : nil
+      case "isWhiteBalanceLocked": return device.whiteBalanceMode == .locked
+      default: throw ConfigurationError.unsupported
+      }
+      return nil
+    } catch {
+      return FlutterError(code: "cameraControlError", message: error.localizedDescription, details: call.method)
+    }
+  }
+
   //方法句柄
   // MARK: FlutterPlugin
+  private var pendingCalls: [(FlutterMethodCall, FlutterResult)] = []
+  private var handlingCall = false
+
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    pendingCalls.append((call, result))
+    drainCalls()
+  }
+
+  private func drainCalls() {
+    guard !handlingCall, !pendingCalls.isEmpty else { return }
+    handlingCall = true
+    let (call, callback) = pendingCalls.removeFirst()
+    perform(call) { [weak self] value in
+      DispatchQueue.main.async {
+        callback(value)
+        self?.handlingCall = false
+        self?.drainCalls()
+      }
+    }
+  }
+
+  private func perform(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+    case "initializePlayback":
+      Task {
+        guard mixer == nil, rtmpStream == nil, texture == nil, let registry = registrar?.textures() else {
+          result(FlutterError(code: "sessionBusy", message: "Dispose the active camera/player before initializing playback", details: nil))
+          return
+        }
+        let connection = RTMPConnection()
+        rtmpConnection = connection
+        let stream = RTMPStream(connection: connection)
+        rtmpStream = stream
+        let output = HKStreamFlutterTexture(registry: registry)
+        output.bounds = CGSize(width: 1280, height: 720)
+        output.videoGravity = .resizeAspect
+        texture = output
+        await stream.addOutput(output)
+        let player = AudioPlayer(audioEngine: AVAudioEngine())
+        playbackAudioPlayer = player
+        await stream.attachAudioPlayer(player)
+        result(["textureId": output.textureId, "eventId": Int(bitPattern: ObjectIdentifier(self))])
+      }
+    case "startPlayback":
+      let args = call.arguments as? [String: Any] ?? [:]
+      guard let url = args["url"] as? String,
+        let proto = args["protocol"] as? String, ["rtmp", "whep"].contains(proto),
+        mixer == nil, texture != nil else {
+        result(FlutterError(code: "invalidState", message: "Initialize PlayerController before playback", details: nil))
+        return
+      }
+      Task { result(await startVideoStreaming(url: url, frameRate: 0,
+        protocolName: proto, isPlay: true, whipToken: args["whipToken"] as? String)) }
+    case "setPlaybackMuted":
+      guard isPlayback, let args = call.arguments as? [String: Any], let muted = args["muted"] as? Bool else {
+        result(FlutterError(code: "invalidState", message: "No active playback", details: nil)); return
+      }
+      Task {
+        let sound = SoundTransform(volume: muted ? 0 : 1)
+        if currentProtocol == "rtmp" { await rtmpStream?.setSoundTransform(sound) }
+        #if canImport(RTCHaishinKit)
+        if currentProtocol == "whep" { await rtcStream?.setSoundTransform(sound) }
+        #endif
+        result(nil)
+      }
+    case "getCapabilities":
+      Task {
+        let device = mixer?.activeVideoDevice
+        let multi = await mixer?.supportsMultitasking() ?? false
+        result([
+          "backend": "HaishinKit/2.2.5 (SPM)",
+          "protocols": ["rtmp", "srt", "whip", "whep"],
+          "videoCodecs": Self.supportsHevcEncoder() ? ["h264", "h265"] : ["h264"], "audioCodecs": ["aac", "opus"],
+          "features": ["recordingPause": false, "zoom": device != nil,
+            "focus": device?.isFocusModeSupported(.autoFocus) ?? false,
+            "torch": device?.hasTorch ?? false, "overlays": true, "filters": false,
+            "screenCapture": false, "uvc": false, "pcmInput": false,
+            "whipBearerToken": false, "playback": true, "playbackPause": true,
+            "multitaskingCameraAccess": multi, "rtmpPing": false,
+            "captureTelemetry": device != nil,
+            "manualExposure": device?.isExposureModeSupported(.custom) ?? false,
+            "bitRateMode": true, "microphoneDetach": false]
+        ])
+      }
+    case "setVideoCodec":
+      let args = call.arguments as? [String: Any] ?? [:]
+      guard !isRecording else { result(FlutterError(code: "invalidState", message: "Stop recording before changing codecs", details: nil)); return }
+      let name = args["name"] as? String
+      guard name == "h264" || (name == "h265" && Self.supportsHevcEncoder()) else {
+        result(FlutterError(code: "unsupportedCodec", message: "This device exposes H264/H265 encoding only", details: nil)); return
+      }
+      Task {
+        var settings = desiredVideoSettings
+        settings.profileLevel = name == "h265" ? kVTProfileLevel_HEVC_Main_AutoLevel as String : kVTProfileLevel_H264_Baseline_AutoLevel as String
+        do {
+          for stream in configuredStreams() { try await stream.setVideoSettings(settings) }
+          desiredVideoSettings = settings
+          result(nil)
+        } catch { result(FlutterError(code: "setVideoCodecError", message: error.localizedDescription, details: nil)) }
+      }
+    case "setAudioCodec":
+      let args = call.arguments as? [String: Any] ?? [:]
+      result(args["name"] as? String == "aac" ? nil : FlutterError(code: "unsupportedCodec", message: "iOS selects AAC for RTMP/SRT and Opus for WHIP automatically", details: nil))
+    case "setCaptureTelemetry":
+      let args = call.arguments as? [String: Any] ?? [:]
+      guard let enabled = args["enabled"] as? Bool,
+        let interval = args["intervalMs"] as? NSNumber, interval.intValue >= 100 else {
+        result(FlutterError(code: "invalidArgument", message: "Telemetry interval must be at least 100ms", details: nil)); return
+      }
+      telemetryTimer?.invalidate()
+      telemetryTimer = nil
+      if enabled {
+        guard mixer?.activeVideoDevice != nil else {
+          result(FlutterError(code: "noCamera", message: "Telemetry requires a capture device", details: nil)); return
+        }
+        telemetryTimer = Timer.scheduledTimer(withTimeInterval: interval.doubleValue / 1000, repeats: true) { [weak self] _ in
+          Task { @MainActor in
+          guard let self, let device = self.mixer?.activeVideoDevice else { return }
+          let duration = CMTimeGetSeconds(device.exposureDuration)
+          guard duration.isFinite, duration >= 0 else { return }
+          self.emitEvent(["eventType": "capture_statistics", "captureStatistics": [
+            "iso": device.iso,
+            "exposureTimeNanos": Int64(duration * 1_000_000_000),
+            "focusLensPosition": device.lensPosition
+          ]])
+          }
+        }
+      }
+      result(nil)
+    case "setManualExposure":
+      result(cameraControl(call))
+    case "getCameraControls", "setZoom", "setAutoFocus", "tapToFocus",
+         "lockExposure", "unlockExposure", "isExposureLocked", "lockWhiteBalance",
+         "unlockWhiteBalance", "isWhiteBalanceLocked", "tapToMeter":
+      result(cameraControl(call))
     case "availableCameras":
       do{
         result(availableCameras())
@@ -1096,23 +1298,27 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
         ))
       }
     case "initialize":
-      
+      guard mixer == nil, rtmpStream == nil, texture == nil else {
+        result(FlutterError(code: "sessionBusy", message: "Dispose the current session before reinitializing", details: nil)); return
+      }
       do{
         guard
           let arguments = call.arguments as? [String: Any?],
           let enableAudio = arguments["enableAudio"] as? Bool,
           let resolution = arguments["resolutionPreset"] as? String,
           let cameraId = arguments["cameraName"] as? String else {
-          result(nil)
+          result(FlutterError(code: "invalidArgument", message: "cameraName, resolutionPreset and enableAudio are required", details: nil))
           return
         }
         Task {
-          print("enableAudio \(enableAudio)")
-          print("resolution \(resolution)")
-          //        print("cameraId \(arguments["cameraId"] as? String)")
-          
-          let res = await initialize(cameraId: cameraId, enableAudio: enableAudio, resolution: resolution)
-          result(res)   // 返回给 Flutter
+          do {
+            let res = try await initialize(cameraId: cameraId, enableAudio: enableAudio, resolution: resolution)
+            guard let res else { throw ConfigurationError.invalidValue }
+            result(res)
+          } catch {
+            await dispose()
+            result(FlutterError(code: "initializeError", message: error.localizedDescription, details: nil))
+          }   // 返回给 Flutter
           
         }
       }catch{
@@ -1229,7 +1435,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       let protocolName = (arguments["protocol"] as? String) ?? "rtmp"
       let whipToken = arguments["whipToken"] as? String
       Task {
-        print("connect Url \(url) protocol \(protocolName)")
         let res = await startVideoStreaming(
           url: url,
           frameRate: bitrate,
@@ -1278,8 +1483,8 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           return
         }
         Task{
-          await newMixer.attachVideo(resolution: nil, cameraId: cameraId)
-          result(nil)
+          do { _ = try await newMixer.attachVideo(resolution: nil, cameraId: cameraId); result(nil) }
+          catch { result(FlutterError(code: "switchCameraError", message: error.localizedDescription, details: nil)) }
         }
       }catch{
         result(FlutterError(
@@ -1310,7 +1515,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           return
         }
         Task{
-          await newMixer.attachAudio(isEnable: isEnable)
+          await newMixer.setHasAudio(hasAudio: isEnable)
           result(nil)
         }
       }catch{
@@ -1548,8 +1753,8 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           return
         }
         Task{
-          await newMixer.setFrameRate(frameRate: frameRate)
-          result(nil)
+          do { try await newMixer.setFrameRate(frameRate: frameRate); result(nil) }
+          catch { result(FlutterError(code: "setFrameRateError", message: error.localizedDescription, details: nil)) }
         }
       }catch{
         result(FlutterError(
@@ -1557,6 +1762,24 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           message: "catch error",
           details: nil
         ))
+      }
+    case "setCapturePreset":
+      guard let args = call.arguments as? [String: Any], let preset = args["preset"] as? String,
+        ["low", "medium", "high", "veryHigh", "ultraHigh", "max"].contains(preset),
+        let mixer, let device = mixer.activeVideoDevice, !isRecording else {
+        result(FlutterError(code: "invalidState", message: "An idle camera and valid preset are required", details: nil)); return
+      }
+      Task {
+        do {
+          let size = try await mixer.attachVideo(resolution: preset, cameraId: device.uniqueID)
+          var settings = desiredVideoSettings
+          settings.videoSize = size
+          for stream in configuredStreams() { try await stream.setVideoSettings(settings) }
+          desiredVideoSettings = settings
+          explicitVideoSize = false
+          texture?.bounds = size
+          result(nil)
+        } catch { result(FlutterError(code: "setCapturePresetError", message: error.localizedDescription, details: nil)) }
       }
     case "setSessionPreset":
       do{
@@ -1580,8 +1803,8 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           return
         }
         Task{
-          await newMixer.setSessionPreset(sessionPreset: sessionPreset)
-          result(nil)
+          do { try await newMixer.setSessionPreset(sessionPreset: sessionPreset); result(nil) }
+          catch { result(FlutterError(code: "setSessionPresetError", message: error.localizedDescription, details: nil)) }
         }
       }catch{
         result(FlutterError(
@@ -1623,8 +1846,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
           details: nil
         ))
       }
-    case "getPlatformVersion":
-      result(kHaishinKitIdentifier)
     case "setOverlayText":
       guard
         let arguments = call.arguments as? [String: Any?],
@@ -1651,7 +1872,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
             position: position,
             scale: CGFloat(scale)
           )
-          await syncStreamVideoSizeToOverlayCanvas(mixer)
           result(nil)
         } catch {
           result(FlutterError(code: "setOverlayTextError", message: error.localizedDescription, details: nil))
@@ -1670,7 +1890,6 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
       Task {
         do {
           try await mixer.setOverlayImage(filePath: filePath, position: position, scale: CGFloat(scale))
-          await syncStreamVideoSizeToOverlayCanvas(mixer)
           result(nil)
         } catch {
           result(FlutterError(code: "setOverlayImageError", message: error.localizedDescription, details: nil))
@@ -1720,7 +1939,7 @@ public final class HaishinKitPlugin: NSObject,FlutterPlugin {
 }
 
 
-extension HaishinKitPlugin: FlutterStreamHandler {
+extension HaishinKitPlugin: @preconcurrency FlutterStreamHandler {
   // MARK: FlutterStreamHandler
   public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     self.eventSink = events
@@ -1728,6 +1947,7 @@ extension HaishinKitPlugin: FlutterStreamHandler {
   }
   
   public func onCancel(withArguments arguments: Any?) -> FlutterError? {
+    eventSink = nil
     return nil
   }
 }

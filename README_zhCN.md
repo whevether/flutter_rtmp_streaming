@@ -51,7 +51,7 @@
 - 📡 开始推送直播流：`startVideoStreaming`（参数：`url`、`protocol`、`bitrate`；WHIP 可选 `whipToken`）  
 - ⏹️ 停止推送直播流：`stopStreaming`  
 - 🔄 切换摄像头：`switchCamera`  
-- 🔊 切换麦克风采集开/关：`switchAudio`  
+- 🔊 编码音频静音：`setAudioMuted`
 - 🔇 推流时临时静音/恢复：`getHasAudio` / `setHasAudio`  
 - 🎥 推流时临时停发视频/恢复：`getHasVideo` / `setHasVideo`  
 - 🎚️ 音频码率设置：`setAudioSettings`  
@@ -181,21 +181,11 @@ await controller.startVideoStreaming(
 
 ---
 
-### `switchAudio` 与 `setHasAudio` 的区别
+### 音频静音
 
-| 方法 | 行为 | 典型场景 |
-|------|------|----------|
-| `switchAudio(false)` | 关闭/开启麦克风**采集**（detach/attach） | 彻底停麦 |
-| `setHasAudio(false)` | **临时静音**，仍采集但不送入推流 | 短暂静音、可快速恢复 |
-
-```dart
-// 临时静音（双端）
-await controller.setHasAudio(false);
-final sending = await controller.getHasAudio(); // false
-
-// 关闭麦克风采集（双端）
-await controller.switchAudio(false);
-```
+统一使用 `setAudioMuted(true)` 或 `setHasAudio(false)`。双端都保留采集，仅静音编码音频。
+`switchAudio` 已废弃并作为相同语义的兼容别名；它不再代表麦克风 detach。
+需要无音频轨道的会话时，应以 `enableAudio: false` 初始化。
 
 ---
 
@@ -392,7 +382,7 @@ await controller.startVideoStreaming(url);
 
 ## Android 2.2 升级与验证
 
-最低要求 Flutter **3.44** / Dart **3.12**；本次开发验证使用 Flutter 3.47.7 / Java 21。Android 构建依赖为 AGP 9.4.1、Gradle 9.8.1、Kotlin 2.4.21、AndroidX Annotation 1.11.0、SDK 37.2、Build Tools 37.0.0、NDK 30.0.16248370。RootEncoder 2.8.1、HaishinKit SPM 2.2.5 已是当前发布版本；CocoaPods 保留其最新发布的 HaishinKit 2.0.9 / SRTHaishinKit 2.0.8。
+最低要求 Flutter **3.44** / Dart **3.12**；本次开发验证使用 Flutter 3.47.7 / Java 21。Android 构建依赖为 AGP 9.4.1、Gradle 9.8.1、Kotlin 2.4.21、AndroidX Annotation 1.11.0、SDK 37.2、Build Tools 37.0.0、NDK 30.0.16248370。RootEncoder 2.8.1、HaishinKit SPM 2.2.5 已是当前发布版本；iOS 必须使用 SPM；CocoaPods 最后发布的旧版不包含当前源码需要的 RTMP/RTC 模块。
 
 默认预览切换到 CameraX。需要精确 Camera ID、曝光/白平衡锁定或手动传感器控制时，请选择 Camera2；CameraX 仅保证前后置朝向。单路推流使用各协议专用客户端，不再受 GenericStream 的公共编码子集限制。
 
@@ -431,3 +421,60 @@ RTMP 元数据须在开流前设置，只接受字符串、布尔值和有限数
 示例已声明并请求 Android 17 的 `ACCESS_LOCAL_NETWORK`；宿主应用以 Android 17+ 为目标并连接局域网服务端时，也须声明和动态申请。保存应用私有目录不需要外部存储权限。RTMPS/RTSPS 已启用主机名校验，应使用与主机名匹配的证书。
 
 验证命令与英文说明一致：根目录 `flutter analyze`、`flutter test`，示例目录 `flutter test`，以及示例 Android 工程的 `:rtmp_streaming:testDebugUnitTest :rtmp_streaming:lintDebug :app:assembleDebug`。自动化覆盖状态/错误恢复、截图并发、事件传播、URL/编码组合和权限回调。编译通过不代表真机采集质量或服务端互通已验证；发布前仍须在目标设备上验证前后置切换、预览→录像→推流→停止、无音频、屏幕授权/撤销、Activity 重建、后台恢复与多路故障。此次未验证 iOS 编译。
+
+## 2.3.0 双端对齐与迁移
+
+**iOS 改为仅支持 SPM，要求支持 Swift 6 的 Xcode。** 执行
+`flutter config --enable-swift-package-manager`、`flutter clean`、`flutter pub get`，
+并迁移宿主旧 Podfile、Pods 构建阶段和 xcconfig 引用。示例已迁移到纯 SPM。
+CocoaPods 安装会明确提示迁移，不再选择无法编译的旧 SDK。
+
+初始化后调用 `await controller.getCapabilities()`；切换相机或采集源后重新查询。
+协议来自实际原生构建，编码器列表反映底层能力，`features` 表示已开放操作，未知项按 false 处理。
+相机/硬件和协议仍会约束编码组合、分辨率及帧率，能力列表不保证所有组合都可用。
+
+| 功能 | Android | iOS |
+|---|---|---|
+| RTMP/SRT 推流、录制、截图、叠加、静音 | 支持 | 支持 |
+| 变焦、自动对焦、点按对焦、预览手电筒 | Camera2/CameraX | 当前采集设备 |
+| 曝光/白平衡锁 | Camera2 | 设备支持时可用 |
+| H264/H265 | 取决于硬件 | H265 需 iOS 17.4+ 硬件查询支持；WHIP 使用 H264 |
+| RTSP/UDP、UVC、屏幕采集 | 保留，需授权/外设 | 明确不支持 |
+| PCM、AEC/NS、变调、RTMP ping、GPU 滤镜 | 保留专属接口 | 明确不支持 |
+| 手动 ISO/曝光及采集遥测 | Camera2/设备支持时 | 设备支持时；遥测报告 ISO/曝光/镜头位置 |
+| 录制暂停 | 支持 | StreamRecorder 不支持 |
+| WHIP Bearer Token | 支持 | 上游无注入接口，传入会报错 |
+| 多任务相机 | Android 独立生命周期 | iOS 17+ 且设备支持 |
+| RTMP/WHEP 播放 | 不支持 | 独立 PlayerController/PlayerPreview |
+
+停止单路或多路推流都保留并行录制；`stopRecordingOrStreaming` 停止全部，重复停止安全。
+同时启动录制和推流时，录制失败会回滚网络连接。多路目标默认 ID 为 `dest_0`、`dest_1` 等，
+显式 ID 必须非空且唯一；通过 `streamingDestinationIds` 取得目标。
+事件统一使用 `destinationId`，统计取首个存活目标，不伪造总和。iOS 断线为终止事件，应用可显式重连。
+
+统计单位为像素、bps、fps、字节和微秒。`cacheSize` 为发送队列容量（包数），不是缓冲字节；
+不支持的指标返回 null。`bitrate` 为目标编码码率，实际传输速率使用独立指标。
+协议统计可能包含协议头和重传，不能把不同传输的累计字节直接当成同一媒体量。
+
+空闲时用 `setCapturePreset(ResolutionPreset...)` 选择采集质量；`setVideoSettings` 设置编码。
+尺寸、关键帧间隔、帧率应在启动前设置，Android 于下次编码准备时应用。
+iOS 配置在新建协议流时保留，录制压缩配置于开始录制时应用，正在写入的文件不改参数；录制仅支持 average 码率模式，其他录制模式明确拒绝。
+Android 期望帧率须为正整数；无法应用的码率模式/profile 明确报错；iOS 的 SRT 也遵循码率模式和系统版本限制。
+
+叠加文字和图片以输出像素为单位，缩放限制为 10–400%，保留 ARGB 透明度。
+添加/清除叠加不会改写编码尺寸；iOS 截图使用与预览相同的 aspect-fill 裁切。
+`setOverlayCanvas` 是旧 `setScreenSettings` 的明确命名，表示合成画布而非屏幕采集；显式画布尺寸不会被后续叠加覆盖。
+
+使用 `setVideoEffect(VideoEffect.sobel)` 替代裸整数滤镜；文字/图片使用带参数的 overlay API。
+保留旧接口兼容，未知滤镜报错。`androidUseOpenGL` 和 `prepareForVideoStreaming` 标记废弃且无副作用。
+播放移到独立控制器：先 dispose 相机，再 initialize PlayerController；RTMP 可远程暂停，WHEP 支持停止/重连及静音。
+旧播放暂停接口会校验协议和播放状态，不会再误操作推流编码器。
+
+真机相机质量、直播服务器兼容性、前后台中断和外设仍需真机验收；编译与接口测试不能替代这些验证。
+
+独立播放示例：`cd example && flutter run -t lib/playback.dart`（iOS）。
+
+本轮验证：24 项 Dart 接口/状态测试、11 项 Android 原生测试、Android lint 和 APK 构建通过。
+iOS 应用及 3 项 XCTest 已通过 arm64 模拟器编译与链接；本机 Xcode 27.1 的
+`invalidDigitCount` 版本解析故障阻止 XCTest 执行，因此不将其记为运行通过。
+未进行真机或直播服务器验收。

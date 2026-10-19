@@ -42,7 +42,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 ### 🌍 Common Methods (Android & iOS)
 - 📷 Get available cameras: `availableCameras`  
 - ⚙️ Initialize plugin: `initialize`  
-- 🎬 Prepare for streaming (optional, recommended on iOS): `prepareForVideoStreaming`  
+- 🎬 Legacy preparation (deprecated): `prepareForVideoStreaming`
 - 🎥 Start local video recording: `startVideoRecording`  
 - ⏹️ Stop local video recording: `stopRecording`  
 - 📡 Start recording and streaming: `startVideoRecordingAndStreaming`  
@@ -50,7 +50,7 @@ Therefore, the goal of `rtmp_streaming` is to deliver a **modern, stable, and ma
 - 📡 Start video streaming: `startVideoStreaming` (`url`, `protocol`, `bitrate`; WHIP optional `whipToken`)  
 - ⏹️ Stop video streaming: `stopStreaming`  
 - 🔄 Switch camera: `switchCamera`  
-- 🔊 Toggle mic capture on/off: `switchAudio`  
+- 🔊 Mute encoded audio: `setAudioMuted`
 - 🔇 Temporary mute while streaming: `getHasAudio` / `setHasAudio`  
 - 🎥 Temporary video mute while streaming: `getHasVideo` / `setHasVideo`  
 - 🎚️ Audio bitrate: `setAudioSettings`  
@@ -99,7 +99,7 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+, RTMP only)  
 - 📊 Queue stats in `getStreamStatistics`: `queueBytesOut`, `bytesOutPerSecond`, `queueCongestionPercent`, `totalBytesOut`  
 
-> **WHEP** remains Android-unsupported (RootEncoder is push-only; use iOS for WHEP). 
+> **WHEP** remains Android-unsupported (RootEncoder is push-only; use iOS for WHEP).
 
 ---
 
@@ -172,24 +172,17 @@ await controller.startVideoStreaming(
 ---
 
 ### `prepareForVideoStreaming()`
-- **Purpose**: Pre-warm the capture session for streaming. On iOS, attaches audio early; on Android, no-op (safe to call for shared code).
+- **Purpose**: Deprecated compatibility no-op: initialization already prepares capture.
 - **When**: After `initialize`, before `startVideoStreaming`.
 
 ---
 
-### `switchAudio` vs `setHasAudio`
+### Audio mute
 
-| Method | Behavior | Use case |
-|--------|----------|----------|
-| `switchAudio(false)` | Detach / re-attach mic capture | Fully stop mic input |
-| `setHasAudio(false)` | **Temporary mute** while still capturing | Quick mute without teardown |
-
-```dart
-await controller.setHasAudio(false);
-final sending = await controller.getHasAudio(); // false
-
-await controller.switchAudio(false);
-```
+Use `setAudioMuted(true)` or `setHasAudio(false)` to mute encoded audio while
+keeping capture attached. `switchAudio` is deprecated and now has this same
+behavior on both platforms. This is not a microphone privacy switch; initialize
+with `enableAudio: false` for a video-only session.
 
 ---
 
@@ -430,4 +423,82 @@ cd android && ./gradlew :rtmp_streaming:testDebugUnitTest :rtmp_streaming:lintDe
 
 Tests cover controller state/failure handling, snapshot overlap, event propagation, URL/codec validation and permission callbacks. Builds and lint do not establish camera output, audio/video synchronization, UVC hardware, background recovery or server interoperability. Before publishing an app, test front/back switching, preview → record → stream → stop, audio-disabled capture, screen consent/revocation, activity recreation and multi-destination failures on the target Android devices and servers. iOS compilation was not part of this Android verification.
 
-Dependency sources: [RootEncoder releases](https://github.com/pedroSG94/RootEncoder/releases), [HaishinKit releases](https://github.com/HaishinKit/HaishinKit.swift/releases), [CocoaPods HaishinKit](https://cocoapods.org/pods/HaishinKit), [CocoaPods SRTHaishinKit](https://cocoapods.org/pods/SRTHaishinKit). SPM remains at HaishinKit 2.2.5; CocoaPods remains at the latest versions published there (2.0.9 / 2.0.8).
+Dependency sources: [RootEncoder releases](https://github.com/pedroSG94/RootEncoder/releases), [HaishinKit releases](https://github.com/HaishinKit/HaishinKit.swift/releases), [CocoaPods HaishinKit](https://cocoapods.org/pods/HaishinKit), [CocoaPods SRTHaishinKit](https://cocoapods.org/pods/SRTHaishinKit). SPM remains at HaishinKit 2.2.5; CocoaPods installation is unsupported: its final SDK releases lack the RTMP/RTC modules used here. Enable Flutter SPM.
+
+## Cross-platform contract (2.3.0)
+
+**iOS requires Swift Package Manager and Xcode with Swift 6.** Run
+`flutter config --enable-swift-package-manager`, `flutter clean`, then
+`flutter pub get`. Migrate old host Podfiles and Pods build phases; the example
+uses SPM exclusively. HaishinKit is pinned to 2.2.5. CocoaPods fails with an
+explicit migration message instead of selecting incompatible SDKs.
+
+Query `await controller.getCapabilities()` after initialization and again after
+switching a camera/source. `protocols` describes this native build, `videoCodecs`
+and `audioCodecs` describe available backend encoders, and `features` describes
+exposed operations (unknown keys are false). Codec/protocol combinations are
+still validated when preparing the session; encoder availability does not
+promise every combination or resolution works on a device.
+
+| Capability | Android | iOS |
+|---|---|---|
+| RTMP / SRT publishing, recording, snapshots, overlays, mute | Yes | Yes |
+| Zoom, autofocus, focus point, torch in preview | Camera2 / CameraX | Active capture device |
+| Exposure / white balance lock | Camera2 | Device dependent |
+| H264 / H265 | Hardware dependent | H265 requires iOS 17.4+ hardware query support; WHIP uses H264 |
+| RTSP / UDP, UVC, screen capture | Yes (consent/device required) | Unsupported |
+| Buffer PCM, AEC/NS, pitch, RTMP ping, GPU effects | Android APIs | Unsupported |
+| Manual ISO/exposure and capture telemetry | Camera2/device dependent | Device dependent; telemetry reports ISO/exposure/lens position |
+| Recording pause | Yes | Unsupported by StreamRecorder |
+| WHIP Bearer header | Yes | Unsupported by HaishinKit 2.2.5; token rejected |
+| Multitasking capture | Separate Android lifecycle | Device dependent, iOS 17+ |
+| RTMP / WHEP playback | Unsupported | `PlayerController` / `PlayerPreview` |
+
+`stopVideoStreaming` and `stopMultiStreaming` preserve an active recording.
+`stopRecordingOrStreaming` stops both and is idempotent. Combined start rolls
+back the network if recording fails. Multi-destination IDs default to `dest_0`,
+`dest_1`, etc.; explicit IDs must be unique. Read `streamingDestinationIds` to
+stop targets by ID. Target events use `destinationId`; statistics describe the
+first surviving destination, never a fabricated aggregate. iOS disconnects are
+reported as terminal events; application code can reconnect explicitly.
+
+Statistics use pixels, bits/second, frames/second, bytes and microseconds.
+`cacheSize` is sender capacity in **packets**, not buffered bytes. Unavailable
+values are null. Numeric native values are converted safely. `bitrate` is the
+configured encoder target, not a measured network rate. `queueBytesOut` is queued
+bytes; transport bytes may include framing/retransmission, so comparisons across
+protocols require care.
+
+Use `setCapturePreset(ResolutionPreset...)` while idle to select capture quality;
+`setVideoSettings` controls encoding. Set size, keyframe interval and frame rate
+before starting; Android applies these on the next encoder preparation. iOS
+persists settings across protocol creation and applies recorder compression
+settings when recording starts. Existing recordings are not reconfigured. Recording requires average bitrate mode; other recording modes are rejected.
+Android accepts positive integer `expectedFrameRate`; explicit rate modes or
+profiles fail because these selectors are not exposed. iOS rate modes honor OS availability, including SRT.
+
+Overlay font sizes and image dimensions use output pixels; scale is clamped to
+10–400 percent and ARGB alpha is preserved. Adding/clearing overlays does not
+change encoder dimensions. iOS snapshots use the preview's aspect-fill framing.
+`setOverlayCanvas` replaces the misleading iOS `setScreenSettings` name; it
+configures composition, not screen capture. Explicit canvas size survives
+subsequent overlay updates.
+
+Prefer `setVideoEffect(VideoEffect.sobel)` over integer filter IDs. Legacy filters
+remain compatible; use parameterized overlays instead of demo text/image IDs.
+Unknown IDs fail. `androidUseOpenGL` and `prepareForVideoStreaming` are deprecated
+no-ops. Legacy playback methods reject unsupported operations instead of pausing
+the publishing encoder.
+
+Dispose the camera before initializing `PlayerController` (one native session).
+RTMP playback supports remote pause/resume; WHEP supports stop/reconnect and mute.
+Publishing and playback keep separate Dart states. Hardware capture, server
+interoperability, interruption recovery and media quality need real-device tests.
+
+Playback example: `cd example && flutter run -t lib/playback.dart` (iOS).
+
+Validation: 24 Dart contract/state tests, 11 Android native tests, Android lint
+and APK assembly pass. The iOS app and three XCTest cases compile and link for
+arm64 simulator. XCTest execution is blocked on this machine by Xcode 27.1's
+`invalidDigitCount` simulator/SDK version parsing error; no live-server or
+physical-device result is claimed.

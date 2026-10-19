@@ -24,6 +24,200 @@ void main() {
     messenger.setMockMethodCallHandler(channel, null);
   });
 
+  test(
+    'statistics accept CGFloat values and keep unknown values null',
+    () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'getStreamStatistics') {
+          return {
+            'width': 1280.0,
+            'height': 720.0,
+            'fps': 29.97,
+            'bitrate': 1200000,
+            'bytesSend': 4200.0,
+          };
+        }
+        return null;
+      });
+      final stats = await controller.getStreamStatistics();
+      expect(stats.width, 1280);
+      expect(stats.height, 720);
+      expect(stats.bytesSend, 4200);
+      expect(stats.cacheSize, isNull);
+      expect(stats.sentAudioFrames, isNull);
+      expect(stats.rttMicros, isNull);
+    },
+  );
+
+  test(
+    'capabilities come from native backend and unknown features are false',
+    () async {
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'getCapabilities') {
+          return {
+            'backend': 'test/SPM',
+            'protocols': ['rtmp', 'whep'],
+            'videoCodecs': ['h264'],
+            'audioCodecs': ['aac'],
+            'features': {'recordingPause': false, 'zoom': true},
+          };
+        }
+        return null;
+      });
+      final caps = await controller.getCapabilities();
+      expect(caps.supports('zoom'), isTrue);
+      expect(caps.supports('recordingPause'), isFalse);
+      expect(caps.supports('notImplemented'), isFalse);
+      expect(caps.supportsProtocol(StreamingProtocol.whep), isTrue);
+      expect(caps.supportsProtocol(StreamingProtocol.rtsp), isFalse);
+    },
+  );
+
+  test('torch and mute work during preview without streaming', () async {
+    controller.value = controller.value.copyWith(isStreaming: false);
+    final methods = <String>[];
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      methods.add(call.method);
+      if (call.method == 'setHasAudio') {
+        expect((call.arguments as Map)['isEnable'], isFalse);
+      }
+      return null;
+    });
+    await controller.switchFlashLight(true);
+    await controller.setAudioMuted(true);
+    expect(methods, ['switchFlashLight', 'setHasAudio']);
+  });
+
+  test('common camera controls dispatch on the native backend', () async {
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'getCameraControls') {
+        return {
+          'zoom': 1.0,
+          'minZoom': 1,
+          'maxZoom': 5,
+          'autoFocus': true,
+          'exposure': 0,
+          'torch': false,
+        };
+      }
+      if (call.method == 'tapToFocus') return true;
+      return null;
+    });
+    expect((await controller.getCameraControls()).maxZoom, 5);
+    await controller.setZoom(2);
+    await controller.setAutoFocus(true);
+    expect(await controller.tapToFocus(), isTrue);
+  });
+
+  test('invalid encoder settings never reach native code', () async {
+    var calls = 0;
+    messenger.setMockMethodCallHandler(channel, (_) async {
+      calls++;
+      return null;
+    });
+    await expectLater(
+      controller.setVideoSettings(width: 721, height: 1280),
+      throwsArgumentError,
+    );
+    await expectLater(
+      controller.setVideoSettings(expectedFrameRate: double.nan),
+      throwsArgumentError,
+    );
+    await expectLater(
+      controller.setVideoSettings(bitRateMode: 'ignored'),
+      throwsArgumentError,
+    );
+    expect(calls, 0);
+  });
+
+  test('stop-all is idempotent after all outputs stopped', () async {
+    controller.value = controller.value.copyWith(
+      isRecordingVideo: false,
+      isStreaming: false,
+    );
+    var stops = 0;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method.startsWith('stop')) stops++;
+      return null;
+    });
+    await controller.stopRecordingOrStreaming();
+    await controller.stopVideoStreaming();
+    expect(stops, 0);
+  });
+
+  test(
+    'multi IDs are normalized and final target stop preserves recording',
+    () async {
+      controller.value = controller.value.copyWith(
+        isStreaming: false,
+        isRecordingVideo: false,
+      );
+      messenger.setMockMethodCallHandler(channel, (call) async {
+        if (call.method == 'getCapabilities') {
+          return {
+            'backend': 'test',
+            'protocols': ['rtmp', 'srt'],
+            'videoCodecs': ['h264'],
+            'audioCodecs': ['aac'],
+            'features': <String, bool>{},
+          };
+        }
+        if (call.method == 'startMultiStreaming') {
+          final targets = (call.arguments as Map)['destinations'] as List;
+          expect((targets[0] as Map)['id'], 'dest_0');
+          expect((targets[1] as Map)['id'], 'backup');
+        }
+        return null;
+      });
+      await controller.startMultiStreaming([
+        StreamDestination(url: 'rtmp://host/live/key'),
+        StreamDestination(
+          url: 'srt://host:9000',
+          protocol: StreamingProtocol.srt,
+          id: 'backup',
+        ),
+      ]);
+      controller.value = controller.value.copyWith(isRecordingVideo: true);
+      expect(controller.streamingDestinationIds, ['dest_0', 'backup']);
+      await controller.stopStreamingDestination('dest_0');
+      expect(controller.value.isStreaming, isTrue);
+      await controller.stopStreamingDestination('backup');
+      expect(controller.value.isStreaming, isFalse);
+      expect(controller.value.isRecordingVideo, isTrue);
+    },
+  );
+
+  test('multi start failure rolls back partial success state', () async {
+    controller.value = controller.value.copyWith(
+      isStreaming: false,
+      isRecordingVideo: false,
+    );
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      if (call.method == 'getCapabilities') {
+        return {
+          'backend': 'test',
+          'protocols': ['rtmp'],
+          'videoCodecs': ['h264'],
+          'audioCodecs': ['aac'],
+          'features': <String, bool>{},
+        };
+      }
+      if (call.method == 'startMultiStreaming') {
+        controller.value = controller.value.copyWith(isStreaming: true);
+        throw PlatformException(code: 'second_destination_failed');
+      }
+      return null;
+    });
+    await expectLater(
+      controller.startMultiStreaming([
+        StreamDestination(url: 'rtmp://host/live/key'),
+      ]),
+      throwsA(isA<CameraException>()),
+    );
+    expect(controller.value.isStreaming, isFalse);
+    expect(controller.streamingDestinationIds, isEmpty);
+  });
+
   test('stopping the network preserves a concurrent recording', () async {
     await controller.stopVideoStreaming();
     expect(controller.value.isStreaming, isFalse);
@@ -110,6 +304,17 @@ void main() {
       await expectLater(controller.tapToFocus(x: 1.5), throwsArgumentError);
       await expectLater(
         controller.setPitchShift(double.infinity),
+        throwsArgumentError,
+      );
+      await expectLater(
+        controller.setOverlayText(text: 'x', fontSize: double.nan),
+        throwsArgumentError,
+      );
+      await expectLater(
+        controller.setOverlayImage(
+          filePath: '/tmp/test.png',
+          scale: double.infinity,
+        ),
         throwsArgumentError,
       );
       await expectLater(controller.setFrameRate(0), throwsArgumentError);

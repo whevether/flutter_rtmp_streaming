@@ -1,3 +1,12 @@
+## 2.3.0
+
+- Add native build/source capability queries, common camera controls, typed capture presets and named Android GPU effects. Keep platform-specific capture and transport APIs explicit.
+- Preserve recording when stopping multi-streaming; normalize destination IDs and events, roll back combined starts, make stop-all idempotent, and update pause state only after success.
+- Normalize numeric statistics and units; report unavailable metrics as null. Fix iOS settings persistence, SRT bitrate mode, recorder compression settings, active-camera torch, overlay alpha/scale and snapshot framing.
+- Add separate iOS PlayerController/PlayerPreview for RTMP/WHEP. Reject unsupported pause, codec, authentication and multitasking requests explicitly.
+- Require iOS Swift Package Manager / Swift 6, add FlutterFramework and static binary linker dependencies, migrate example away from Pods, serialize native method requests and clean up initialization/disposal and event subscriptions.
+- Deprecate no-op OpenGL/warmup flags, ambiguous audio and canvas names, and integer filter APIs. Audio aliases now mute without detaching capture on both platforms.
+
 ## 2.2.0
 
 - Merge PR #14 with fixes for CameraX idle recording, audio preparation, snapshots, encoder/source release, surface loss and independent recording/streaming state.

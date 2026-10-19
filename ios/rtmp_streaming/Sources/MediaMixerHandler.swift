@@ -2,9 +2,6 @@ import Foundation
 #if canImport(Flutter)
 import Flutter
 #endif
-#if canImport(FlutterMacOS)
-import FlutterMacOS
-#endif
 import HaishinKit
 import RTMPHaishinKit
 import AVFoundation
@@ -14,11 +11,14 @@ import UIKit
 #endif
 
 final class MediaMixerHandler: NSObject {
+  enum CameraSetupError: Error { case noDevice, invalidValue }
+  private(set) var activeVideoDevice: AVCaptureDevice?
   var texture: HKStreamFlutterTexture?
   private lazy var mixer = MediaMixer(multiTrackAudioMixingEnabled: false)
   private var overlayObject: ScreenObject?
   private var screenConfiguredForOverlay = false
   private var lastCaptureSize: CGSize = .zero
+  private var explicitCanvas: CGSize?
   
   override init() {
     super.init()
@@ -27,6 +27,8 @@ final class MediaMixerHandler: NSObject {
 #endif
   }
   
+  deinit { NotificationCenter.default.removeObserver(self) }
+
   func addOutput(_ output: any MediaMixerOutput, startRunning: Bool = false) async {
     await mixer.addOutput(output)
     if startRunning {
@@ -47,7 +49,8 @@ final class MediaMixerHandler: NSObject {
   
   func dispose()  async{
     await clearOverlay()
-    stopRunning()
+    await mixer.stopCapturing()
+    await mixer.stopRunning()
     _ = try? await mixer.attachVideo(nil, track: 0)
     _ = try? await mixer.attachAudio(nil, track: 0)
   }
@@ -70,7 +73,7 @@ final class MediaMixerHandler: NSObject {
     Task {
       await mixer.setVideoOrientation(videoOrientation)
       // Keep offscreen canvas matched to interface orientation while overlay is active.
-      if screenConfiguredForOverlay {
+      if screenConfiguredForOverlay && explicitCanvas == nil {
         await Self.applyOverlayScreenGeometry(
           mixer: mixer,
           texture: texture,
@@ -80,6 +83,24 @@ final class MediaMixerHandler: NSObject {
     }
   }
 #endif
+
+  /// Map a normalized aspect-fill preview point to the unrotated sensor space.
+  func captureDevicePoint(x: Double, y: Double) -> CGPoint {
+    let portrait = Self.isPortrait(Self.currentInterfaceOrientation())
+    let source = portrait ? CGSize(width: lastCaptureSize.height, height: lastCaptureSize.width) : lastCaptureSize
+    let viewport = texture?.bounds ?? source
+    guard source.width > 0, source.height > 0, viewport.width > 0, viewport.height > 0 else { return CGPoint(x: x, y: y) }
+    let scale = max(viewport.width / source.width, viewport.height / source.height)
+    var px = (CGFloat(x) * viewport.width + (source.width * scale - viewport.width) / 2) / (source.width * scale)
+    let py = (CGFloat(y) * viewport.height + (source.height * scale - viewport.height) / 2) / (source.height * scale)
+    if activeVideoDevice?.position == .front { px = 1 - px }
+    switch Self.currentInterfaceOrientation() {
+    case .portrait: return CGPoint(x: py, y: 1 - px)
+    case .portraitUpsideDown: return CGPoint(x: 1 - py, y: px)
+    case .landscapeLeft: return CGPoint(x: 1 - px, y: 1 - py)
+    default: return CGPoint(x: px, y: py)
+    }
+  }
 
   // 获取是否开启了声音
   func getHasAudio() async -> Bool{
@@ -110,14 +131,15 @@ final class MediaMixerHandler: NSObject {
     await mixer.setVideoMixerSettings(videoMixerSettings)
   }
   //设置帧速率
-  func setFrameRate(frameRate: NSNumber?) async{
+  func setFrameRate(frameRate: NSNumber?) async throws {
     if(frameRate == nil){
       return
     }
-    _ = try? await mixer.setFrameRate(frameRate!.doubleValue)
+    guard frameRate!.doubleValue.isFinite, frameRate!.doubleValue > 0 else { throw CameraSetupError.invalidValue }
+    try await mixer.setFrameRate(frameRate!.doubleValue)
   }
   //设置分辨率
-  func setSessionPreset(sessionPreset: String?) async{
+  func setSessionPreset(sessionPreset: String?) async throws {
     let preset: AVCaptureSession.Preset = switch sessionPreset {
     case "high": .high
     case "medium": .medium
@@ -129,16 +151,20 @@ final class MediaMixerHandler: NSObject {
     case "iFrame960x540": .iFrame960x540
     case "iFrame1280x720": .iFrame1280x720
     case "cif352x288": .cif352x288
-    default: .hd1280x720
+    default: throw CameraSetupError.invalidValue
+    }
+    try await mixer.configuration { session in
+      guard session.canSetSessionPreset(preset) else { throw CameraSetupError.invalidValue }
     }
     await mixer.setSessionPreset(preset)
   }
   //附加音频到直播
-  func attachAudio(isEnable: Bool?)async{
+  func attachAudio(isEnable: Bool?) async throws {
     if (isEnable == nil || isEnable == false) {
-      try? await mixer.attachAudio(nil)
+      try await mixer.attachAudio(nil)
     } else {
-      try? await mixer.attachAudio(AVCaptureDevice.default(for: .audio))
+      guard let device = AVCaptureDevice.default(for: .audio) else { throw CameraSetupError.noDevice }
+      try await mixer.attachAudio(device)
     }
     
   }
@@ -148,7 +174,10 @@ final class MediaMixerHandler: NSObject {
     if(width == nil || height == nil){
       return nil
     }
-    mixer.screen.size = CGSize(width: CGFloat(width!.floatValue), height: CGFloat(height!.floatValue))
+    let size = CGSize(width: CGFloat(width!.floatValue), height: CGFloat(height!.floatValue))
+    guard size.width > 0, size.height > 0 else { return nil }
+    explicitCanvas = size
+    mixer.screen.size = size
     return texture?.textureId
   }
   
@@ -175,7 +204,7 @@ final class MediaMixerHandler: NSObject {
     case "ultraHigh": return CGSize(width: 3840, height: 2160)
     case "max":
       if let device = device {
-        let dimensions = device.activeFormat.highResolutionStillImageDimensions
+        let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
         return CGSize(width: Int(dimensions.width), height: Int(dimensions.height))
       }
       return CGSize(width: 1920, height: 1080)
@@ -184,21 +213,34 @@ final class MediaMixerHandler: NSObject {
   }
 
   //附加视频到直播
-  func attachVideo(resolution: String?, cameraId: String?)async ->CGSize{
+  func attachVideo(resolution: String?, cameraId: String?) async throws -> CGSize {
     if cameraId == nil {
-      try? await mixer.attachVideo(nil, track: 0)
+      try await mixer.attachVideo(nil, track: 0)
       return .zero
     }
 #if os(iOS)
-    guard let device = AVCaptureDevice(uniqueID: cameraId!) else { return .zero }
+    guard let device = AVCaptureDevice(uniqueID: cameraId!) else { throw CameraSetupError.noDevice }
 #else
-    guard let device = AVCaptureDevice.devices(for: .video).first else { return .zero }
+    guard let device = AVCaptureDevice.devices(for: .video).first else { throw CameraSetupError.noDevice }
 #endif
-    try? await mixer.attachVideo(device, track: 0)
-    guard let resolution = resolution else { return .zero }
+    try await mixer.attachVideo(device, track: 0)
+    activeVideoDevice = device
+    guard let resolution = resolution else { return lastCaptureSize }
 
     if let presetString = Self.sessionPresetString(for: resolution) {
-      await setSessionPreset(sessionPreset: presetString)
+      try await setSessionPreset(sessionPreset: presetString)
+    } else if resolution == "max" {
+      guard let format = device.formats.filter({ format in
+        format.videoSupportedFrameRateRanges.contains { $0.maxFrameRate >= 30 }
+      }).max(by: { lhs, rhs in
+        let a = CMVideoFormatDescriptionGetDimensions(lhs.formatDescription)
+        let b = CMVideoFormatDescriptionGetDimensions(rhs.formatDescription)
+        return Int64(a.width) * Int64(a.height) < Int64(b.width) * Int64(b.height)
+      }) else { throw CameraSetupError.invalidValue }
+      await mixer.setSessionPreset(.inputPriority)
+      try device.lockForConfiguration()
+      device.activeFormat = format
+      device.unlockForConfiguration()
     }
     let size = Self.targetSize(for: resolution, device: device)
     lastCaptureSize = size
@@ -208,15 +250,25 @@ final class MediaMixerHandler: NSObject {
 #if os(iOS)
   /// HaishinKit 2.2.5+：分屏、画中画等场景下保持相机采集（需设备支持 `isMultitaskingCameraAccessSupported`）。
   /// 通过 `MediaMixer.configuration` 写入底层 `AVCaptureSession`（iOS 17+ 与 HaishinKit API 一致）。
-  func setMultitaskingCameraAccessEnabled(_ enabled: Bool) async {
+  func supportsMultitasking() async -> Bool {
+    // AVCaptureSession configuration returns Void; use a synchronized box.
+    let support = CapabilityFlag()
     if #available(iOS 17.0, *) {
-      await mixer.configuration { session in
-        if session.isMultitaskingCameraAccessSupported {
-          session.isMultitaskingCameraAccessEnabled = enabled
-        }
-      }
+      await mixer.configuration { session in support.value = session.isMultitaskingCameraAccessSupported }
     }
+    return support.value
   }
+  private final class CapabilityFlag: @unchecked Sendable { var value = false }
+
+  func setMultitaskingCameraAccessEnabled(_ enabled: Bool) async -> Bool {
+    guard await supportsMultitasking() else { return false }
+    if #available(iOS 17.0, *) {
+      await mixer.configuration { session in session.isMultitaskingCameraAccessEnabled = enabled }
+      return true
+    }
+    return false
+  }
+
 #endif
 
   private static func currentInterfaceOrientation() -> AVCaptureVideoOrientation {
@@ -264,11 +316,12 @@ final class MediaMixerHandler: NSObject {
     if (texture?.bounds.width ?? 0) < 2, lastCaptureSize.width > 1 {
       texture?.bounds = lastCaptureSize
     }
-    await Self.applyOverlayScreenGeometry(
-      mixer: mixer,
-      texture: texture,
-      orientation: orientation
-    )
+    if let explicitCanvas {
+      mixer.screen.size = explicitCanvas
+      texture?.bounds = explicitCanvas
+    } else {
+      await Self.applyOverlayScreenGeometry(mixer: mixer, texture: texture, orientation: orientation)
+    }
 
     var videoMixerSettings = await mixer.videoMixerSettings
     videoMixerSettings.mode = .offscreen
@@ -311,6 +364,7 @@ final class MediaMixerHandler: NSObject {
     position: String?,
     scale: CGFloat
   ) async throws {
+    guard !text.isEmpty, fontSize.isFinite, fontSize > 0, fontSize <= 1024, scale.isFinite else { throw CameraSetupError.invalidValue }
     await ensureOverlayScreenConfigured()
     if let existing = overlayObject {
       try? await mixer.screen.removeChild(existing)
@@ -325,7 +379,7 @@ final class MediaMixerHandler: NSObject {
     ]
     textObject.attributes = attributes
     let measured = (text as NSString).size(withAttributes: attributes)
-    let factor = max(scale / 100.0, 0.1)
+    let factor = min(max(scale / 100.0, 0.1), 4.0)
     textObject.size = CGSize(
       width: max(measured.width * factor, fontSize),
       height: max(measured.height * factor, fontSize)
@@ -337,6 +391,7 @@ final class MediaMixerHandler: NSObject {
 
   @ScreenActor
   func setOverlayImage(filePath: String, position: String?, scale: CGFloat) async throws {
+    guard scale.isFinite else { throw CameraSetupError.invalidValue }
     await ensureOverlayScreenConfigured()
     if let existing = overlayObject {
       try? await mixer.screen.removeChild(existing)
@@ -347,7 +402,7 @@ final class MediaMixerHandler: NSObject {
     }
     let imageObject = ImageScreenObject()
     imageObject.cgImage = image
-    let factor = max(scale / 100.0, 0.1)
+    let factor = min(max(scale / 100.0, 0.1), 4.0)
     let w = CGFloat(image.width) * factor
     let h = CGFloat(image.height) * factor
     imageObject.size = CGSize(width: max(w, 1), height: max(h, 1))
@@ -379,6 +434,6 @@ final class MediaMixerHandler: NSObject {
     let r = CGFloat((argb >> 16) & 0xff) / 255.0
     let g = CGFloat((argb >> 8) & 0xff) / 255.0
     let b = CGFloat(argb & 0xff) / 255.0
-    return UIColor(red: r, green: g, blue: b, alpha: a == 0 ? 1 : a)
+    return UIColor(red: r, green: g, blue: b, alpha: a)
   }
 }

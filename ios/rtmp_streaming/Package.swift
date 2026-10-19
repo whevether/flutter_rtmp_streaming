@@ -1,4 +1,4 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.0
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -12,19 +12,25 @@ let package = Package(
         .library(name: "rtmp-streaming", targets: ["rtmp_streaming"])
     ],
     dependencies: [
+        .package(name: "FlutterFramework", path: "../FlutterFramework"),
         .package(url: "https://github.com/HaishinKit/HaishinKit.swift", exact: "2.2.5")
     ],
     targets: [
         .target(
             name: "rtmp_streaming",
             dependencies: [
+                .product(name: "FlutterFramework", package: "FlutterFramework"),
                 .product(name: "HaishinKit", package: "HaishinKit.swift"),
                 .product(name: "RTMPHaishinKit", package: "HaishinKit.swift"),
                 .product(name: "SRTHaishinKit", package: "HaishinKit.swift"),
                 .product(name: "RTCHaishinKit", package: "HaishinKit.swift")
             ],
             resources: [
-            ]
+            ],
+            swiftSettings: [.swiftLanguageMode(.v5)],
+            // Flutter aggregates plugins into a static SPM product. Propagate
+            // binary-library link flags through that product to the host app.
+            linkerSettings: [.linkedLibrary("srt"), .linkedLibrary("datachannel"), .linkedLibrary("c++")]
         )
     ]
 )

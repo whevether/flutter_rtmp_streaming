@@ -42,7 +42,6 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   final CameraController controller = CameraController(
     ResolutionPreset.medium,
     enableAudio: true,
-    androidUseOpenGL: true,
   );
   String? imagePath;
   String? videoPath;
@@ -59,10 +58,13 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   StreamingProtocol _multiProtocol1 = StreamingProtocol.rtmp;
   StreamingProtocol _multiProtocol2 = StreamingProtocol.srt;
   bool _isMultiStreaming = false;
+  StreamingCapabilities? _capabilities;
 
   List<StreamingProtocol> get _availableProtocols {
     return StreamingProtocol.values
-        .where(isStreamingProtocolSupported)
+        .where(
+          (p) => p != StreamingProtocol.whep && isStreamingProtocolSupported(p),
+        )
         .toList(growable: false);
   }
 
@@ -158,7 +160,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                 ElevatedButton(
                   onPressed: isControllerInitialized
                       ? () async {
-                          await controller.setFilter(0);
+                          await controller.setVideoEffect(
+                            VideoEffect.deformation,
+                          );
                         }
                       : null,
                   child: Text("set filter"),
@@ -166,7 +170,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                 ElevatedButton(
                   onPressed: isControllerInitialized
                       ? () async {
-                          await controller.removeFilter(0);
+                          await controller.clearVideoEffect();
                         }
                       : null,
                   child: Text("remove filter"),
@@ -174,7 +178,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                 ElevatedButton(
                   onPressed: isControllerInitialized
                       ? () async {
-                          await controller.setFilter(43);
+                          await controller.setVideoEffect(VideoEffect.sobel);
                         }
                       : null,
                   child: const Text('edge HQ'),
@@ -354,7 +358,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               color: Colors.white,
             ),
             style: ElevatedButton.styleFrom(
-              backgroundColor: !isStreamingPaused ? Colors.blue : Colors.red,
+              backgroundColor: !isRecordingPaused ? Colors.blue : Colors.red,
             ),
             label: Text(
               !isRecordingPaused ? "pause Recording" : "resume Recording",
@@ -404,7 +408,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
           value: enableAudio,
           onChanged: (bool value) async {
             if (isControllerInitialized) {
-              await controller.switchAudio(value);
+              await controller.setAudioMuted(!value);
               setState(() {
                 enableAudio = value;
               });
@@ -643,17 +647,20 @@ class CameraExampleHomeState extends State<CameraExampleHome>
           const Text('多任务相机 (HaishinKit 2.2.5+, iOS 17+)'),
           Switch(
             value: _iosMultitaskingCamera,
-            onChanged: (bool v) async {
-              setState(() => _iosMultitaskingCamera = v);
-              if (!isControllerInitialized) {
-                return;
-              }
-              try {
-                await controller.setMultitaskingCameraAccessEnabled(v);
-              } on CameraException catch (e) {
-                _showCameraException(e);
-              }
-            },
+            onChanged:
+                _capabilities?.supports('multitaskingCameraAccess') != true
+                ? null
+                : (bool v) async {
+                    setState(() => _iosMultitaskingCamera = v);
+                    if (!isControllerInitialized) {
+                      return;
+                    }
+                    try {
+                      await controller.setMultitaskingCameraAccessEnabled(v);
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  },
           ),
           ElevatedButton(
             onPressed: isControllerInitialized
@@ -759,7 +766,12 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       if (Platform.isAndroid) await Permission.accessLocalNetwork.request();
     }
     try {
-      await controller.initialize(cameraDescription);
+      if (isControllerInitialized) {
+        await controller.switchCamera(cameraDescription.name!);
+      } else {
+        await controller.initialize(cameraDescription);
+      }
+      _capabilities = await controller.getCapabilities();
       if (Platform.isIOS && _iosMultitaskingCamera) {
         try {
           await controller.setMultitaskingCameraAccessEnabled(true);

@@ -1,29 +1,3 @@
-#
-# To learn more about a Podspec see http://guides.cocoapods.org/syntax/podspec.html.
-# Run `pod lib lint rtmp_streaming.podspec` to validate before publishing.
-#
-Pod::Spec.new do |s|
-  s.name             = 'rtmp_streaming'
-  s.version          = '2.2.0'
-  s.summary          = 'A Flutter plugin for Camera and Microphone streaming library via RTMP.'
-  s.description      = <<-DESC
-A Flutter plugin for Camera and Microphone streaming library via RTMP for HaishinKit.
-This plugin provides easy-to-use API for RTMP streaming functionality in Flutter applications.
-                       DESC
-  s.homepage         = 'https://github.com/whevether/flutter_rtmp_broadcaster'
-  s.license          = { :file => '../LICENSE' }
-  s.author           = { 'keep_wan' => 'whevether@outlook.com' }
-  
-  s.source           = { :path => '.' }
-  s.source_files     = 'rtmp_streaming/Sources/**/*'
-  s.dependency 'Flutter'
-  # CocoaPods 最高：HaishinKit 2.0.9、SRTHaishinKit 2.0.8；之后版本仅支持 SPM（Package.swift 用 2.2.5）
-  s.dependency 'HaishinKit', '2.0.9'
-  s.dependency 'SRTHaishinKit', '2.0.8'
-
-  s.platform = :ios, '15.0'
-
-  # Flutter.framework does not contain a i386 slice.
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386' }
-  s.swift_version = '5.0'
-end
+# HaishinKit >= 2.1 moved to Swift Package Manager. The split RTMP/RTC
+# modules used by this plugin do not exist in the final CocoaPods releases.
+raise 'rtmp_streaming requires Swift Package Manager. Run flutter config --enable-swift-package-manager, then flutter clean and flutter pub get. Remove this plugin from legacy Podfile overrides.'

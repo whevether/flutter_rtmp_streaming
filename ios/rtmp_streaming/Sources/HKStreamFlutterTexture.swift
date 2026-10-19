@@ -1,9 +1,6 @@
 #if canImport(Flutter)
 import Flutter
 #endif
-#if canImport(FlutterMacOS)
-import FlutterMacOS
-#endif
 import Foundation
 import HaishinKit
 import AVFoundation
@@ -18,10 +15,16 @@ final class HKStreamFlutterTexture: NSObject, FlutterTexture {
     kCVPixelBufferIOSurfacePropertiesKey as String: NSDictionary()
   ]
   
-  var bounds: CGSize = .zero
-  var videoGravity: AVLayerVideoGravity = .resizeAspectFill
-  var videoOrientation: AVCaptureVideoOrientation = .portrait
-  var isCaptureVideoPreviewEnabled: Bool = false
+  private var storedBounds: CGSize = .zero
+  private var storedGravity: AVLayerVideoGravity = .resizeAspectFill
+  var bounds: CGSize {
+    get { queue.sync { storedBounds } }
+    set { queue.sync { storedBounds = newValue } }
+  }
+  var videoGravity: AVLayerVideoGravity {
+    get { queue.sync { storedGravity } }
+    set { queue.sync { storedGravity = newValue } }
+  }
   private(set) var textureId: Int64 = 0
   private let context = CIContext()
   private let registry: FlutterTextureRegistry
@@ -45,6 +48,9 @@ final class HKStreamFlutterTexture: NSObject, FlutterTexture {
 ////    }
 //  }
   func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
+    let bounds = self.bounds
+    let videoGravity = self.videoGravity
+    guard bounds.width > 0, bounds.height > 0 else { return createPlaceholderPixelBuffer() }
     var buffer: CMSampleBuffer?
     
     // ✅ 使用并发队列的同步读取
@@ -90,7 +96,8 @@ final class HKStreamFlutterTexture: NSObject, FlutterTexture {
     CVPixelBufferCreate(kCFAllocatorDefault, Int(bounds.width), Int(bounds.height), kCVPixelFormatType_32BGRA, Self.defaultOptions as CFDictionary?, &pixelBuffer)
     
     if let pixelBuffer = pixelBuffer {
-      context.render(scaledImage, to: pixelBuffer)
+      let background = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: bounds))
+      context.render(scaledImage.composited(over: background), to: pixelBuffer)
       return Unmanaged<CVPixelBuffer>.passRetained(pixelBuffer)
     }
     
@@ -114,23 +121,10 @@ final class HKStreamFlutterTexture: NSObject, FlutterTexture {
   
   // 获取当前帧的图片
   func getCurrentImage() -> UIImage? {
-    var buffer: CMSampleBuffer?
-    
-    queue.sync {
-      buffer = _currentSampleBuffer
-    }
-    
-    guard let currentSampleBuffer = buffer,
-          let imageBuffer = CMSampleBufferGetImageBuffer(currentSampleBuffer) else {
-      return nil
-    }
-    
-    let ciImage = CIImage(cvPixelBuffer: imageBuffer)
-    
-    guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-      return nil
-    }
-    
+    guard queue.sync(execute: { _currentSampleBuffer != nil }) else { return nil }
+    guard let buffer = copyPixelBuffer()?.takeRetainedValue() else { return nil }
+    let image = CIImage(cvPixelBuffer: buffer)
+    guard let cgImage = context.createCGImage(image, from: image.extent) else { return nil }
     return UIImage(cgImage: cgImage)
   }
 }

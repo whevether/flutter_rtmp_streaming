@@ -40,3 +40,6 @@ fastlane/report.xml
 
 # Keep the example application dependency resolution reproducible.
 !example/pubspec.lock
+
+# Kotlin compiler session caches and diagnostics.
+.kotlin/
