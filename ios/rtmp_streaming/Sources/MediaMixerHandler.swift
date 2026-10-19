@@ -69,17 +69,40 @@ final class MediaMixerHandler: NSObject {
       orientation = DeviceUtil.videoOrientation(by: UIApplication.shared.statusBarOrientation)
     }
     
-    guard let videoOrientation = orientation else { return}
-    Task {
-      await mixer.setVideoOrientation(videoOrientation)
-      // Keep offscreen canvas matched to interface orientation while overlay is active.
-      if screenConfiguredForOverlay && explicitCanvas == nil {
+    guard let videoOrientation = orientation else { return }
+    Task { [weak self] in
+      await self?.applyOrientation(videoOrientation)
+    }
+    // `windowScene.interfaceOrientation` can lag the physical rotation when the
+    // device is held at an angle (the interface only settles once the device is
+    // flat or clearly oriented). Re-apply shortly after so the preview canvas
+    // ends up matching the settled interface orientation.
+    Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 600_000_000)
+      guard let self else { return }
+      await self.applyOrientation(Self.currentInterfaceOrientation())
+    }
+  }
+
+  /// Idempotently aligns the mixer orientation, preview texture canvas and —
+  /// when the overlay is active — the offscreen canvas, to `orientation`.
+  private func applyOrientation(_ videoOrientation: AVCaptureVideoOrientation) async {
+    await mixer.setVideoOrientation(videoOrientation)
+    if screenConfiguredForOverlay {
+      // Keep offscreen canvas matched to interface orientation while overlay
+      // is active, unless the app pinned an explicit canvas size.
+      if explicitCanvas == nil {
         await Self.applyOverlayScreenGeometry(
           mixer: mixer,
           texture: texture,
           orientation: videoOrientation
         )
       }
+    } else if (texture?.bounds.width ?? 0) > 1 {
+      // Keep the preview texture canvas matched to the new orientation so the
+      // Flutter-side preview does not squeeze portrait frames into a
+      // landscape texture (and vice versa).
+      texture?.bounds = await orientedCaptureSize()
     }
   }
 #endif
@@ -223,6 +246,15 @@ final class MediaMixerHandler: NSObject {
 #else
     guard let device = AVCaptureDevice.devices(for: .video).first else { throw CameraSetupError.noDevice }
 #endif
+#if canImport(UIKit)
+    // A fresh MediaMixer defaults to portrait and attachVideo applies that to
+    // the capture connection. When the camera is (re)initialized while the
+    // interface is already landscape, no orientation notification follows, so
+    // the preview would stay rotated in a landscape texture until the device
+    // moves again.
+    let orientation = await MainActor.run { Self.currentInterfaceOrientation() }
+    await mixer.setVideoOrientation(orientation)
+#endif
     try await mixer.attachVideo(device, track: 0)
     activeVideoDevice = device
     guard let resolution = resolution else { return lastCaptureSize }
@@ -244,8 +276,46 @@ final class MediaMixerHandler: NSObject {
     }
     let size = Self.targetSize(for: resolution, device: device)
     lastCaptureSize = size
-    return size
+    return await orientedCaptureSize()
   }
+
+  /// The canonical capture size oriented to the current interface orientation.
+  ///
+  /// `lastCaptureSize` is always landscape (long x short). Portrait interfaces
+  /// get the sides swapped so both the Flutter preview texture and the encoded
+  /// stream match what the user sees on screen.
+  func orientedCaptureSize() async -> CGSize {
+    let base = lastCaptureSize
+    guard base.width > 1, base.height > 1 else { return base }
+#if canImport(UIKit)
+    let isPortrait = await MainActor.run { Self.interfaceIsPortrait() }
+    let shortSide = min(base.width, base.height)
+    let longSide = max(base.width, base.height)
+    return isPortrait
+      ? CGSize(width: shortSide, height: longSide)
+      : CGSize(width: longSide, height: shortSide)
+#else
+    return base
+#endif
+  }
+
+#if canImport(UIKit)
+  /// Whether the interface is currently portrait.
+  ///
+  /// Preferred source is the key window's bounds: they settle exactly when the
+  /// layout rotates, whereas `windowScene.interfaceOrientation` can lag the
+  /// physical rotation and report a stale value mid-transition.
+  private static func interfaceIsPortrait() -> Bool {
+    if #available(iOS 15.0, *),
+       let scene = UIApplication.shared.connectedScenes.first(where: {
+         ($0 as? UIWindowScene)?.activationState == .foregroundActive
+       }) as? UIWindowScene,
+       let window = scene.keyWindow {
+      return window.bounds.height >= window.bounds.width
+    }
+    return isPortrait(currentInterfaceOrientation())
+  }
+#endif
 
 #if os(iOS)
   /// HaishinKit 2.2.5+：分屏、画中画等场景下保持相机采集（需设备支持 `isMultitaskingCameraAccessSupported`）。
@@ -422,8 +492,9 @@ final class MediaMixerHandler: NSObject {
       var videoMixerSettings = await mixer.videoMixerSettings
       videoMixerSettings.mode = .passthrough
       await mixer.setVideoMixerSettings(videoMixerSettings)
-      if lastCaptureSize.width > 1 {
-        texture?.bounds = lastCaptureSize
+      let orientedSize = await orientedCaptureSize()
+      if orientedSize.width > 1 {
+        texture?.bounds = orientedSize
       }
       screenConfiguredForOverlay = false
     }

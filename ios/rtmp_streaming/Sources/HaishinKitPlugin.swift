@@ -302,7 +302,10 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           "textureId": texture.textureId,
           "eventId": eventId,
           "previewWidth": size.width,
-          "previewHeight": size.height
+          "previewHeight": size.height,
+          // The iOS texture renders frames already oriented to the
+          // interface, so no additional quarter-turn rotation is needed.
+          "previewQuarterTurns": 0
         ]
       } else {
         let textureResult = HKStreamFlutterTexture(registry: registry)
@@ -317,7 +320,8 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           "textureId": texture?.textureId,
           "eventId": eventId,
           "previewWidth": size.width,
-          "previewHeight": size.height
+          "previewHeight": size.height,
+          "previewQuarterTurns": 0
         ]
       }
     }else {
@@ -406,6 +410,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       guard let newName = name else {
         return FlutterError(code: "startVideoStreamingError", message: "publish name error", details: nil)
       }
+      if !isPlayback { await refreshOrientedVideoSize() }
       if !isPlayback, let error = await setVideoSettings(
         bitrate: frameRate,
         width: nil,
@@ -438,6 +443,16 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
                   "errorDescription" : "rtmp disconnected"])
       return FlutterError(code: "startVideoStreamingError", message: "catch error", details: nil)
     }
+  }
+
+  /// Re-aligns the encoded canvas with the current interface orientation.
+  /// The capture size is only recorded at initialize; if the device rotated
+  /// since, a portrait stream would be cropped into a landscape canvas (and
+  /// vice versa). Sizes set explicitly by the app are left untouched.
+  private func refreshOrientedVideoSize() async {
+    guard !explicitVideoSize else { return }
+    let size = await mixer?.orientedCaptureSize() ?? .zero
+    if size.width > 1, size.height > 1 { desiredVideoSettings.videoSize = size }
   }
 
   #if canImport(RTCHaishinKit)
@@ -484,6 +499,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       if mode == .publish {
         try await applySettings(to: stream)
         await mixer?.addOutput(stream, startRunning: false)
+        await refreshOrientedVideoSize()
         if let error = await setVideoSettings(
           bitrate: frameRate,
           width: nil,
@@ -583,6 +599,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       srtStream = stream
       await mixer?.addOutput(stream, startRunning: false)
 
+      if !isPlayback { await refreshOrientedVideoSize() }
       if !isPlayback, let error = await setVideoSettings(
         bitrate: frameRate,
         width: nil,
@@ -636,6 +653,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
     await tearDownRtcSession()
     try? await rtmpConnection?.close()
     desiredVideoSettings.bitRate = frameRate.intValue
+    await refreshOrientedVideoSize()
 
     for (index, dest) in destinations.enumerated() {
       guard let url = dest["url"] as? String else {
