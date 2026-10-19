@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "com.app.rtmp_streaming"
-version = "2.1.1"
+version = "2.2.0"
 
 buildscript {
     repositories {
@@ -11,7 +11,7 @@ buildscript {
         mavenCentral()
     }
     dependencies {
-        classpath("com.android.tools.build:gradle:9.4.0")
+        classpath("com.android.tools.build:gradle:9.4.1")
     }
 }
 
@@ -26,6 +26,7 @@ rootProject.allprojects {
 android {
     namespace = "com.app.rtmp_streaming"
     compileSdk = 37
+    compileSdkMinor = 2
     buildToolsVersion = "37.0.0"
 
     compileOptions {
@@ -51,10 +52,11 @@ android {
 
 
 dependencies {
-    implementation("androidx.annotation:annotation:1.10.0")
-    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.10")
+    implementation("androidx.annotation:annotation:1.11.0")
+    implementation("org.jetbrains.kotlin:kotlin-stdlib:2.4.21")
     implementation("com.github.pedroSG94.RootEncoder:library:2.8.1")
     implementation("com.github.pedroSG94.RootEncoder:extra-sources:2.8.1")
+    testImplementation("junit:junit:4.13.2")
     // CameraX comes transitively from extra-sources (runtime); no compile deps needed
     // for facing-only CameraXSource.switchCamera().
 }

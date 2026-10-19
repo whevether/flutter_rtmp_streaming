@@ -53,7 +53,8 @@ bool isStreamingProtocolSupported(StreamingProtocol protocol) {
 
 /// Protocols allowed in [CameraController.startMultiStreaming] (excludes WHIP/WHEP).
 bool isMultiStreamingProtocolSupported(StreamingProtocol protocol) {
-  if (protocol == StreamingProtocol.whip || protocol == StreamingProtocol.whep) {
+  if (protocol == StreamingProtocol.whip ||
+      protocol == StreamingProtocol.whep) {
     return false;
   }
   return isStreamingProtocolSupported(protocol);
@@ -128,6 +129,33 @@ String serializeVideoSourceType(VideoSourceType source) {
   }
 }
 
+/// Current controls reported by an active Android Camera2/CameraX source.
+class CameraControls {
+  const CameraControls({
+    required this.zoom,
+    required this.minZoom,
+    required this.maxZoom,
+    required this.autoFocus,
+    required this.exposure,
+    required this.torch,
+  });
+  final double zoom;
+  final double minZoom;
+  final double maxZoom;
+  final bool autoFocus;
+  final int exposure;
+  final bool torch;
+
+  factory CameraControls.fromMap(Map<String, dynamic> data) => CameraControls(
+    zoom: (data['zoom'] as num).toDouble(),
+    minZoom: (data['minZoom'] as num).toDouble(),
+    maxZoom: (data['maxZoom'] as num).toDouble(),
+    autoFocus: data['autoFocus'] as bool,
+    exposure: (data['exposure'] as num).toInt(),
+    torch: data['torch'] as bool,
+  );
+}
+
 /// One destination for [CameraController.startMultiStreaming].
 class StreamDestination {
   const StreamDestination({
@@ -141,10 +169,10 @@ class StreamDestination {
   final String? id;
 
   Map<String, dynamic> toMap() => <String, dynamic>{
-        'url': url,
-        'protocol': serializeStreamingProtocol(protocol),
-        if (id != null) 'id': id,
-      };
+    'url': url,
+    'protocol': serializeStreamingProtocol(protocol),
+    if (id != null) 'id': id,
+  };
 }
 
 /// Affect the quality of video recording and image capture.
@@ -267,12 +295,14 @@ class StreamStatistics {
   final int? droppedAudioFrames;
   final int? droppedVideoFrames;
   final bool? isAudioMuted;
+
   /// 推流时视频是否被静音（发送黑帧），双端对齐。
   final bool? isVideoMuted;
   final int? bitrate;
   final int? width;
   final int? height;
   final int? fps;
+
   /// RTMP 往返时延（微秒），需 `setRtmpShouldSendPings(true)` 且推流建立后由服务端响应 ping。
   final int? rttMicros;
   final int? bytesSend;
@@ -340,8 +370,9 @@ class CameraPreview extends StatelessWidget {
       if (controller.value.previewSize!.width <
           controller.value.previewSize!.height) {
         return RotatedBox(
-            quarterTurns: controller.value.previewQuarterTurns!,
-            child: childView);
+          quarterTurns: controller.value.previewQuarterTurns!,
+          child: childView,
+        );
       } else {
         return childView;
       }
@@ -365,21 +396,24 @@ class CameraValue {
     this.event,
     bool? isRecordingPaused,
     bool? isStreamingPaused,
-  })  : _isRecordingPaused = isRecordingPaused,
-        _isStreamingPaused = isStreamingPaused;
+    // Preserve the public parameter names and the private raw flags.
+    // ignore: prefer_initializing_formals
+  }) : _isRecordingPaused = isRecordingPaused,
+       // ignore: prefer_initializing_formals
+       _isStreamingPaused = isStreamingPaused;
 
   const CameraValue.uninitialized()
-      : this(
-          isInitialized: false,
-          isRecordingVideo: false,
-          isTakingPicture: false,
-          isStreaming: false,
-          streamingProtocol: null,
-          isRecordingPaused: false,
-          isStreamingPaused: false,
-          previewQuarterTurns: 0,
-          event: null,
-        );
+    : this(
+        isInitialized: false,
+        isRecordingVideo: false,
+        isTakingPicture: false,
+        isStreaming: false,
+        streamingProtocol: null,
+        isRecordingPaused: false,
+        isStreamingPaused: false,
+        previewQuarterTurns: 0,
+        event: null,
+      );
 
   /// True after [CameraController.initialize] has completed successfully.
   final bool? isInitialized;
@@ -501,21 +535,28 @@ class CameraController extends ValueNotifier<CameraValue> {
   ///
   /// Throws a [CameraException] if the initialization fails.
   Future<void> initialize(CameraDescription cameraDesc) async {
+    if (_creatingCompleter != null && !_creatingCompleter!.isCompleted) {
+      throw CameraException(
+        'Initialization in progress',
+        'Wait for initialize to complete.',
+      );
+    }
     if (_isDisposed) {
       return Future<void>.value();
     }
     try {
       _creatingCompleter = Completer<void>();
-      final Map<String, dynamic> reply =
-          (await _channel.invokeMapMethod<String, dynamic>(
-        'initialize',
-        <String, dynamic>{
-          'cameraName': cameraDesc.name,
-          'resolutionPreset': serializeResolutionPreset(resolutionPreset),
-          'enableAudio': enableAudio,
-          'enableAndroidOpenGL': androidUseOpenGL
-        },
-      ))!;
+      final Map<String, dynamic> reply = (await _channel
+          .invokeMapMethod<String, dynamic>('initialize', <String, dynamic>{
+            'cameraName': cameraDesc.name,
+            'resolutionPreset': serializeResolutionPreset(resolutionPreset),
+            'enableAudio': enableAudio,
+            'enableAndroidOpenGL': androidUseOpenGL,
+          }))!;
+      if (_isDisposed) {
+        _creatingCompleter!.complete();
+        return;
+      }
       _textureId = reply['textureId'];
       _eventId = reply['eventId'];
       value = value.copyWith(
@@ -527,12 +568,18 @@ class CameraController extends ValueNotifier<CameraValue> {
         previewQuarterTurns: reply['previewQuarterTurns'],
       );
     } on PlatformException catch (e) {
+      _creatingCompleter!.complete();
+      _creatingCompleter = null;
       throw CameraException(e.code, e.message);
+    } catch (_) {
+      _creatingCompleter!.complete();
+      _creatingCompleter = null;
+      rethrow;
     }
-    _eventSubscription =
-        EventChannel('com.rtmp_streaming.eventchannel/$_eventId')
-            .receiveBroadcastStream()
-            .listen(_listener);
+    await _eventSubscription?.cancel();
+    _eventSubscription = EventChannel(
+      'com.rtmp_streaming.eventchannel/$_eventId',
+    ).receiveBroadcastStream().listen(_listener);
     _creatingCompleter!.complete();
     return _creatingCompleter!.future;
   }
@@ -568,46 +615,60 @@ class CameraController extends ValueNotifier<CameraValue> {
     final String? errorDescription = map?['errorDescription'];
     final Map<String, dynamic> uniEvent = <String, dynamic>{
       'eventType': eventType,
-      'errorDescription': errorDescription
+      'errorDescription': errorDescription,
+      if (map?['destinationId'] != null) 'destinationId': map!['destinationId'],
+      if (map?['captureStatistics'] != null)
+        'captureStatistics': map!['captureStatistics'],
     };
     switch (eventType) {
       case 'error':
-        value =
-            value.copyWith(errorDescription: errorDescription, event: uniEvent);
+        value = value.copyWith(
+          errorDescription: errorDescription,
+          event: uniEvent,
+        );
         break;
       case 'camera_closing':
         value = value.copyWith(
-            errorDescription: errorDescription,
-            isRecordingVideo: false,
-            isStreaming: false,
-            clearStreamingProtocol: true,
-            event: uniEvent);
+          errorDescription: errorDescription,
+          isRecordingVideo: false,
+          isStreaming: false,
+          clearStreamingProtocol: true,
+          event: uniEvent,
+        );
         break;
       case 'rtmp_retry':
-        value =
-            value.copyWith(errorDescription: errorDescription, event: uniEvent);
+        value = value.copyWith(
+          errorDescription: errorDescription,
+          event: uniEvent,
+        );
         break;
       case 'rtmp_stopped':
         value = value.copyWith(
-            errorDescription: errorDescription,
-            isStreaming: false,
-            clearStreamingProtocol: true,
-            event: uniEvent);
+          errorDescription: errorDescription,
+          isStreaming: false,
+          clearStreamingProtocol: true,
+          event: uniEvent,
+        );
         break;
       case 'success':
         value = value.copyWith(
-            errorDescription: errorDescription,
-            isStreaming: true,
-            isStreamingPaused: false,
-            event: uniEvent);
+          errorDescription: errorDescription,
+          isStreaming: true,
+          isStreamingPaused: false,
+          event: uniEvent,
+        );
         break;
       case 'wait':
-        value =
-            value.copyWith(errorDescription: errorDescription, event: uniEvent);
+        value = value.copyWith(
+          errorDescription: errorDescription,
+          event: uniEvent,
+        );
         break;
       default:
-        value =
-            value.copyWith(errorDescription: errorDescription, event: uniEvent);
+        value = value.copyWith(
+          errorDescription: errorDescription,
+          event: uniEvent,
+        );
         break;
     }
   }
@@ -636,10 +697,9 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
     try {
       value = value.copyWith(isTakingPicture: true);
-      await _channel.invokeMethod<void>(
-        'takePicture',
-        <String, dynamic>{'path': path},
-      );
+      await _channel.invokeMethod<void>('takePicture', <String, dynamic>{
+        'path': path,
+      });
       value = value.copyWith(isTakingPicture: false);
     } on PlatformException catch (e) {
       value = value.copyWith(isTakingPicture: false);
@@ -666,10 +726,10 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setFilter',
-        <String, dynamic>{'type': type, 'filePath': filePath},
-      );
+      await _channel.invokeMethod<void>('setFilter', <String, dynamic>{
+        'type': type,
+        'filePath': filePath,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -692,10 +752,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setForceBt709Color',
-        <String, dynamic>{'enabled': enabled},
-      );
+      await _channel.invokeMethod<void>('setForceBt709Color', <String, dynamic>{
+        'enabled': enabled,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -727,6 +786,113 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
+  Future<T?> _invokeAndroid<T>(
+    String method, [
+    Map<String, dynamic>? arguments,
+  ]) async {
+    if (!value.isInitialized! || _isDisposed) {
+      throw CameraException(
+        'Uninitialized CameraController',
+        '$method requires an initialized controller.',
+      );
+    }
+    if (!Platform.isAndroid) {
+      throw CameraException(
+        'Unsupported platforms.',
+        '$method requires Android.',
+      );
+    }
+    try {
+      return await _channel.invokeMethod<T>(method, arguments);
+    } on PlatformException catch (e) {
+      throw CameraException(e.code, e.message);
+    }
+  }
+
+  /// Set extra RTMP metadata before streaming. Values are strings, booleans,
+  /// or finite numbers. An empty map clears previously configured metadata.
+  /// Applies to single and multiple RTMP destinations on Android.
+  Future<void> setRtmpMetadata(Map<String, Object> metadata) async {
+    if (metadata.entries.any(
+      (entry) =>
+          entry.key.trim().isEmpty ||
+          !(entry.value is String ||
+              entry.value is bool ||
+              (entry.value is num && (entry.value as num).isFinite)),
+    )) {
+      throw ArgumentError(
+        'Metadata requires nonempty keys and finite scalar values.',
+      );
+    }
+    await _invokeAndroid<void>('setRtmpMetadata', {'metadata': metadata});
+  }
+
+  /// Request an encoder keyframe while streaming or recording on Android.
+  Future<void> requestKeyFrame() async =>
+      _invokeAndroid<void>('requestKeyFrame');
+
+  /// Set manual ISO and exposure time using Camera2's custom capture request.
+  /// Values must fit the selected device's sensor ranges. Omit both to restore
+  /// automatic exposure. Requires an active [VideoSourceType.camera2] preview.
+  Future<void> setManualExposure({int? iso, int? exposureTimeNanos}) async {
+    if ((iso == null) != (exposureTimeNanos == null) ||
+        (iso != null && iso <= 0) ||
+        (exposureTimeNanos != null && exposureTimeNanos <= 0)) {
+      throw ArgumentError(
+        'Provide positive ISO and exposure time together, or omit both.',
+      );
+    }
+    await _invokeAndroid<void>('setManualExposure', {
+      'iso': iso,
+      'exposureTimeNanos': exposureTimeNanos,
+    });
+  }
+
+  /// Opt into Camera2 capture-completed reports through [CameraValue.event].
+  /// Events have `eventType: capture_statistics` and a `captureStatistics` map
+  /// containing available ISO, exposure time, sensor timestamp, focus distance,
+  /// and AF/AE/AWB states. [intervalMs] must be >= 100; disabled by default.
+  Future<void> setCaptureTelemetry(
+    bool enabled, {
+    int intervalMs = 1000,
+  }) async {
+    if (intervalMs < 100) throw ArgumentError.value(intervalMs, 'intervalMs');
+    await _invokeAndroid<void>('setCaptureTelemetry', {
+      'enabled': enabled,
+      'intervalMs': intervalMs,
+    });
+  }
+
+  /// Read zoom limits, focus, exposure and torch state from the active Android
+  /// Camera2/CameraX source. Screen, UVC and multi streaming do not expose these controls.
+  Future<CameraControls> getCameraControls() async {
+    final data = await _invokeAndroid<Map<dynamic, dynamic>>(
+      'getCameraControls',
+    );
+    if (data == null) {
+      throw CameraException('CameraError', 'No camera controls returned.');
+    }
+    return CameraControls.fromMap(Map<String, dynamic>.from(data));
+  }
+
+  /// Set zoom within the range returned by [getCameraControls] (Android).
+  Future<void> setZoom(double zoom) async {
+    if (!zoom.isFinite || zoom <= 0) throw ArgumentError.value(zoom, 'zoom');
+    await _invokeAndroid<void>('setZoom', {'zoom': zoom});
+  }
+
+  /// Enable or disable autofocus on the active Camera2/CameraX source (Android).
+  Future<void> setAutoFocus(bool enabled) async =>
+      _invokeAndroid<void>('setAutoFocus', {'enabled': enabled});
+
+  /// Focus at normalized preview coordinates on Android; returns false when unavailable.
+  Future<bool> tapToFocus({double x = 0.5, double y = 0.5}) async {
+    if (!x.isFinite || !y.isFinite || x < 0 || x > 1 || y < 0 || y > 1) {
+      throw ArgumentError('Focus coordinates must be between 0 and 1.');
+    }
+    return await _invokeAndroid<bool>('tapToFocus', {'x': x, 'y': y}) ?? false;
+  }
+
   /// The remove filter
   ///
   /// Throws a [CameraException] if the capture fails.
@@ -744,10 +910,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'removeFilter',
-        <String, dynamic>{'type': type},
-      );
+      await _channel.invokeMethod<void>('removeFilter', <String, dynamic>{
+        'type': type,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -755,9 +920,12 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// Apply RootEncoder PitchShiftEffect to microphone PCM (Android only).
   ///
-  /// [pitch] is clamped to `0.5…3.0` on the native side. Pass `1.0` to disable
+  /// [pitch] must be finite and between `0.5…3.0`. Pass `1.0` to disable
   /// (identity / NoAudioEffect). Prefer calling while preview or streaming is active.
   Future<void> setPitchShift(double pitch) async {
+    if (!pitch.isFinite || pitch < 0.5 || pitch > 3.0) {
+      throw ArgumentError.value(pitch, 'pitch');
+    }
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController.',
@@ -771,10 +939,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setPitchShift',
-        <String, dynamic>{'pitch': pitch},
-      );
+      await _channel.invokeMethod<void>('setPitchShift', <String, dynamic>{
+        'pitch': pitch,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -933,10 +1100,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setVideoCodec',
-        <String, dynamic>{'name': serializeVideoCodecType(codec)},
-      );
+      await _channel.invokeMethod<void>('setVideoCodec', <String, dynamic>{
+        'name': serializeVideoCodecType(codec),
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -957,10 +1123,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setAudioCodec',
-        <String, dynamic>{'name': serializeAudioCodecType(codec)},
-      );
+      await _channel.invokeMethod<void>('setAudioCodec', <String, dynamic>{
+        'name': serializeAudioCodecType(codec),
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -984,13 +1149,10 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setAudioProcessing',
-        <String, dynamic>{
-          if (echoCanceler != null) 'echoCanceler': echoCanceler,
-          if (noiseSuppressor != null) 'noiseSuppressor': noiseSuppressor,
-        },
-      );
+      await _channel.invokeMethod<void>('setAudioProcessing', <String, dynamic>{
+        'echoCanceler': ?echoCanceler,
+        'noiseSuppressor': ?noiseSuppressor,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1094,13 +1256,13 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// Switch video source mode (Android / RootEncoder 2.8.1+).
   ///
-  /// Applied on next stream start for the camera2 path, or immediately when a
-  /// StreamBase session (CameraX / UVC / screen / WHIP) is active.
+  /// Applied on the next stream start, or immediately when a StreamBase preview
+  /// or streaming session (Camera2 / CameraX / UVC / screen / WHIP) is active.
   ///
   /// On stream start, [VideoSourceType.camera2] and [VideoSourceType.cameraX] re-apply the
   /// current camera facing (front/back). UVC and screen have no lens facing.
   /// Android idle preview uses CameraX by default and returns to the selected
-  /// preview source after stop. The preview session is recreated when streaming
+  /// camera source after stop (UVC/screen return to a camera preview). The preview session is recreated when streaming
   /// starts or stops. Not combined with [startMultiStreaming] (MultiCamera2
   /// is camera2-only). For [VideoSourceType.screen], call [requestScreenCapture]
   /// first ([CameraPreview] must be mounted).
@@ -1118,10 +1280,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setVideoSource',
-        <String, dynamic>{'mode': serializeVideoSourceType(source)},
-      );
+      await _channel.invokeMethod<void>('setVideoSource', <String, dynamic>{
+        'mode': serializeVideoSourceType(source),
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1145,10 +1306,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'enableBufferAudio',
-        <String, dynamic>{'enable': enable},
-      );
+      await _channel.invokeMethod<void>('enableBufferAudio', <String, dynamic>{
+        'enable': enable,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1173,10 +1333,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'feedPcmAudio',
-        <String, dynamic>{'bytes': bytes},
-      );
+      await _channel.invokeMethod<void>('feedPcmAudio', <String, dynamic>{
+        'bytes': bytes,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1224,8 +1383,9 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
 
     try {
-      var data = (await _channel
-          .invokeMapMethod<String, dynamic>('getStreamStatistics'))!;
+      var data = (await _channel.invokeMapMethod<String, dynamic>(
+        'getStreamStatistics',
+      ))!;
       return StreamStatistics(
         sentAudioFrames: data["sentAudioFrames"] as int?,
         sentVideoFrames: data["sentVideoFrames"] as int?,
@@ -1242,8 +1402,8 @@ class CameraController extends ValueNotifier<CameraValue> {
         bytesSend: (data["bytesSend"] as num?)?.toInt(),
         queueBytesOut: (data["queueBytesOut"] as num?)?.toInt(),
         bytesOutPerSecond: (data["bytesOutPerSecond"] as num?)?.toInt(),
-        queueCongestionPercent:
-            (data["queueCongestionPercent"] as num?)?.toDouble(),
+        queueCongestionPercent: (data["queueCongestionPercent"] as num?)
+            ?.toDouble(),
         totalBytesOut: (data["totalBytesOut"] as num?)?.toInt(),
       );
     } on PlatformException catch (e) {
@@ -1286,7 +1446,7 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
   }
 
-  /// Stop recording.
+  /// Stop recording while leaving any active stream running.
   Future<void> stopVideoRecording() async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
@@ -1301,10 +1461,7 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'stopRecording',
-        <String, dynamic>{},
-      );
+      await _channel.invokeMethod<void>('stopRecording', <String, dynamic>{});
       value = value.copyWith(isRecordingVideo: false, isRecordingPaused: false);
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
@@ -1393,11 +1550,14 @@ class CameraController extends ValueNotifier<CameraValue> {
   ///
   /// Throws a [CameraException] if the capture fails or the protocol is
   /// unsupported on this platform.
-  Future<void> startVideoRecordingAndStreaming(String filePath, String url,
-      {StreamingProtocol protocol = StreamingProtocol.rtmp,
-      int bitrate = 1200 * 1024,
-      bool? androidUseOpenGL,
-      String? whipToken}) async {
+  Future<void> startVideoRecordingAndStreaming(
+    String filePath,
+    String url, {
+    StreamingProtocol protocol = StreamingProtocol.rtmp,
+    int bitrate = 1200 * 1024,
+    bool? androidUseOpenGL,
+    String? whipToken,
+  }) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -1421,19 +1581,22 @@ class CameraController extends ValueNotifier<CameraValue> {
 
     try {
       await _channel.invokeMethod<void>(
-          'startVideoRecordingAndStreaming', <String, dynamic>{
-        'url': url,
-        'filePath': filePath,
-        'bitrate': bitrate,
-        'protocol': serializeStreamingProtocol(protocol),
-        if (whipToken != null) 'whipToken': whipToken,
-      });
+        'startVideoRecordingAndStreaming',
+        <String, dynamic>{
+          'url': url,
+          'filePath': filePath,
+          'bitrate': bitrate,
+          'protocol': serializeStreamingProtocol(protocol),
+          'whipToken': ?whipToken,
+        },
+      );
       value = value.copyWith(
-          isStreaming: true,
-          streamingProtocol: protocol,
-          isStreamingPaused: false,
-          isRecordingVideo: true,
-          isRecordingPaused: false);
+        isStreaming: true,
+        streamingProtocol: protocol,
+        isStreamingPaused: false,
+        isRecordingVideo: true,
+        isRecordingPaused: false,
+      );
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1450,11 +1613,13 @@ class CameraController extends ValueNotifier<CameraValue> {
   ///
   /// Throws a [CameraException] if the capture fails or the protocol is
   /// unsupported on this platform.
-  Future<void> startVideoStreaming(String url,
-      {StreamingProtocol protocol = StreamingProtocol.rtmp,
-      int bitrate = 1200 * 1024,
-      bool? androidUseOpenGL,
-      String? whipToken}) async {
+  Future<void> startVideoStreaming(
+    String url, {
+    StreamingProtocol protocol = StreamingProtocol.rtmp,
+    int bitrate = 1200 * 1024,
+    bool? androidUseOpenGL,
+    String? whipToken,
+  }) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -1478,15 +1643,16 @@ class CameraController extends ValueNotifier<CameraValue> {
     try {
       await _channel
           .invokeMethod<void>('startVideoStreaming', <String, dynamic>{
-        'url': url,
-        'bitrate': bitrate,
-        'protocol': serializeStreamingProtocol(protocol),
-        if (whipToken != null) 'whipToken': whipToken,
-      });
+            'url': url,
+            'bitrate': bitrate,
+            'protocol': serializeStreamingProtocol(protocol),
+            'whipToken': ?whipToken,
+          });
       value = value.copyWith(
-          isStreaming: true,
-          streamingProtocol: protocol,
-          isStreamingPaused: false);
+        isStreaming: true,
+        streamingProtocol: protocol,
+        isStreamingPaused: false,
+      );
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1506,7 +1672,7 @@ class CameraController extends ValueNotifier<CameraValue> {
       throw CameraException(
         'unsupportedProtocol',
         'StreamingProtocol.${protocol.name} is not allowed in multi-streaming '
-        '(WHIP/WHEP excluded; check platform support).',
+            '(WHIP/WHEP excluded; check platform support).',
       );
     }
   }
@@ -1544,10 +1710,11 @@ class CameraController extends ValueNotifier<CameraValue> {
       _ensureMultiProtocolSupported(d.protocol);
     }
     try {
-      await _channel.invokeMethod<void>('startMultiStreaming', <String, dynamic>{
-        'bitrate': bitrate,
-        'destinations': destinations.map((d) => d.toMap()).toList(),
-      });
+      await _channel
+          .invokeMethod<void>('startMultiStreaming', <String, dynamic>{
+            'bitrate': bitrate,
+            'destinations': destinations.map((d) => d.toMap()).toList(),
+          });
       value = value.copyWith(
         isStreaming: true,
         streamingProtocol: destinations.first.protocol,
@@ -1627,12 +1794,12 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'stopStreaming',
-        <String, dynamic>{},
-      );
+      await _channel.invokeMethod<void>('stopStreaming', <String, dynamic>{});
       value = value.copyWith(
-          isStreaming: false, isStreamingPaused: false, clearStreamingProtocol: true);
+        isStreaming: false,
+        isStreamingPaused: false,
+        clearStreamingProtocol: true,
+      );
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1646,20 +1813,23 @@ class CameraController extends ValueNotifier<CameraValue> {
         'stopRecordingOrStreaming was called on uninitialized CameraController',
       );
     }
-    if (!value.isStreaming!) {
+    if (!value.isStreaming! && !value.isRecordingVideo!) {
       throw CameraException(
         'No video is recording',
         'stopRecordingOrStreaming was called when no video is streaming.',
       );
     }
     try {
-      value = value.copyWith(
-          isStreaming: false,
-          isRecordingVideo: false,
-          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopRecordingOrStreaming',
         <String, dynamic>{},
+      );
+      value = value.copyWith(
+        isStreaming: false,
+        isRecordingVideo: false,
+        isRecordingPaused: false,
+        isStreamingPaused: false,
+        clearStreamingProtocol: true,
       );
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
@@ -1680,8 +1850,9 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
 
     try {
-      await _channel.invokeMethod<void>(
-          'switchCamera', <String, dynamic>{'cameraName': cameraId});
+      await _channel.invokeMethod<void>('switchCamera', <String, dynamic>{
+        'cameraName': cameraId,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1705,8 +1876,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-          'switchAudio', <String, dynamic>{'isEnable': isEnable});
+      await _channel.invokeMethod<void>('switchAudio', <String, dynamic>{
+        'isEnable': isEnable,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1731,8 +1903,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-          'switchFlashLight', <String, dynamic>{'isEnable': isEnable});
+      await _channel.invokeMethod<void>('switchFlashLight', <String, dynamic>{
+        'isEnable': isEnable,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1767,10 +1940,7 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
     try {
       value = value.copyWith(isStreamingPaused: true);
-      await _channel.invokeMethod<void>(
-        'pauseStream',
-        <String, dynamic>{},
-      );
+      await _channel.invokeMethod<void>('pauseStream', <String, dynamic>{});
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1805,10 +1975,7 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
     try {
       value = value.copyWith(isStreamingPaused: false);
-      await _channel.invokeMethod<void>(
-        'resumeStream',
-        <String, dynamic>{},
-      );
+      await _channel.invokeMethod<void>('resumeStream', <String, dynamic>{});
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1823,10 +1990,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setAudioSettings',
-        <String, dynamic>{"bitrate": bitrate},
-      );
+      await _channel.invokeMethod<void>('setAudioSettings', <String, dynamic>{
+        "bitrate": bitrate,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1839,14 +2005,17 @@ class CameraController extends ValueNotifier<CameraValue> {
   /// [bitRateMode]：`average`（默认）、`constant`（iOS 16+）、`variable`（iOS 26+）。
   ///
   /// Android：推流中可通过 [bitrate] 调用 `setVideoBitrateOnFly` 热更新码率。
-  Future<void> setVideoSettings(
-      {int? bitrate,
-      int? width,
-      int? height,
-      int? frameInterval,
-      String? profileLevel,
-      double? expectedFrameRate,
-      String? bitRateMode}) async {
+  /// Android applies width/height and keyframe interval (seconds) on the next
+  /// stream or recording session. Bitrate can also change during streaming.
+  Future<void> setVideoSettings({
+    int? bitrate,
+    int? width,
+    int? height,
+    int? frameInterval,
+    String? profileLevel,
+    double? expectedFrameRate,
+    String? bitRateMode,
+  }) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -1854,18 +2023,15 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setVideoSettings',
-        <String, dynamic>{
-          "bitrate": bitrate,
-          "width": width,
-          "height": height,
-          "frameInterval": frameInterval,
-          if (!Platform.isAndroid) "profileLevel": profileLevel,
-          if (expectedFrameRate != null) "expectedFrameRate": expectedFrameRate,
-          if (bitRateMode != null) "bitRateMode": bitRateMode,
-        },
-      );
+      await _channel.invokeMethod<void>('setVideoSettings', <String, dynamic>{
+        "bitrate": bitrate,
+        "width": width,
+        "height": height,
+        "frameInterval": frameInterval,
+        if (!Platform.isAndroid) "profileLevel": profileLevel,
+        "expectedFrameRate": ?expectedFrameRate,
+        "bitRateMode": ?bitRateMode,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1924,10 +2090,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setHasAudio',
-        <String, dynamic>{"isEnable": isEnable},
-      );
+      await _channel.invokeMethod<void>('setHasAudio', <String, dynamic>{
+        "isEnable": isEnable,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1960,10 +2125,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setHasVideo',
-        <String, dynamic>{"isEnable": isEnable},
-      );
+      await _channel.invokeMethod<void>('setHasVideo', <String, dynamic>{
+        "isEnable": isEnable,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1971,6 +2135,7 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// 设置采集/编码目标帧率。宜在 [initialize] 之后、开始推流前调用。
   Future<void> setFrameRate(int frameRate) async {
+    if (frameRate <= 0) throw ArgumentError.value(frameRate, 'frameRate');
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(
         'Uninitialized CameraController',
@@ -1978,10 +2143,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setFrameRate',
-        <String, dynamic>{"frameRate": frameRate},
-      );
+      await _channel.invokeMethod<void>('setFrameRate', <String, dynamic>{
+        "frameRate": frameRate,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -2003,10 +2167,9 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setSessionPreset',
-        <String, dynamic>{"sessionPreset": sessionPreset},
-      );
+      await _channel.invokeMethod<void>('setSessionPreset', <String, dynamic>{
+        "sessionPreset": sessionPreset,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -2028,10 +2191,10 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      await _channel.invokeMethod<void>(
-        'setScreenSettings',
-        <String, dynamic>{"width": width, "height": height},
-      );
+      await _channel.invokeMethod<void>('setScreenSettings', <String, dynamic>{
+        "width": width,
+        "height": height,
+      });
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -2045,18 +2208,12 @@ class CameraController extends ValueNotifier<CameraValue> {
     }
     _isDisposed = true;
     // Update state so UI reflects streaming/recording stopped before native dispose
-    value = value.copyWith(
-      isStreaming: false,
-      isRecordingVideo: false,
-    );
+    value = value.copyWith(isStreaming: false, isRecordingVideo: false);
     notifyListeners();
     super.dispose();
     if (_creatingCompleter != null) {
       await _creatingCompleter!.future;
-      await _channel.invokeMethod<void>(
-        'dispose',
-        <String, dynamic>{},
-      );
+      await _channel.invokeMethod<void>('dispose', <String, dynamic>{});
       await _eventSubscription?.cancel();
     }
   }

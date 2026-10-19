@@ -2,6 +2,10 @@ package com.app.rtmp_streaming
 
 import android.app.Activity
 import android.content.Context
+import android.content.Intent
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.hardware.camera2.CameraAccessException
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -18,13 +22,16 @@ import io.flutter.plugin.platform.PlatformViewRegistry
 import java.util.HashMap
 
 class MethodCallHandlerImplNew(
-    private val activity: Activity,
+    activity: Activity,
     private val messenger: BinaryMessenger,
     private val cameraPermissions: CameraPermissions,
     private val permissionsRegistry: PermissionStuff,
-    private val platformViewRegistry: PlatformViewRegistry
+    private val platformViewRegistry: PlatformViewRegistry,
+    private val registeredFactory: NativeViewFactory
 ) : MethodCallHandler {
 
+    private var attachedActivity: Activity? = activity
+    private val activity: Activity get() = requireNotNull(attachedActivity) { "Activity not attached" }
     private val methodChannel: MethodChannel
     private var dartMessenger: DartMessenger? = null
     private var nativeViewFactory: NativeViewFactory? = null
@@ -36,32 +43,46 @@ class MethodCallHandlerImplNew(
 
     private val SCREEN_CAPTURE_REQUEST = 4001
     private var pendingScreenResult: MethodChannel.Result? = null
+    private var pendingInitialization: MethodChannel.Result? = null
     private var screenCaptureListenerRegistered = false
+    private var screenCaptureConnection: ServiceConnection? = null
+    private var screenCaptureListener: PluginRegistry.ActivityResultListener? = null
     var activityBinding: ActivityPluginBinding? = null
         set(value) {
             if (field !== value) {
+                screenCaptureListener?.let { field?.removeActivityResultListener(it) }
+                screenCaptureListener = null
                 screenCaptureListenerRegistered = false
             }
             field = value
         }
 
     init {
-        val handlerThread = HandlerThread("WorkerThread").apply {
-            start()
-        }
-        handler = Handler(handlerThread.looper)
+        handler = Handler(android.os.Looper.getMainLooper())
         Log.d("TAG", "init $platformViewRegistry")
         methodChannel = MethodChannel(messenger, "com.rtmp_streaming")
         methodChannel.setMethodCallHandler(this)
         dartMessenger = DartMessenger(messenger, id)
-        nativeViewFactory = NativeViewFactory(activity)
-
-        platformViewRegistry
-            .registerViewFactory(VIEW_TYPE, nativeViewFactory as NativeViewFactory)
+        nativeViewFactory = registeredFactory
+        nativeViewFactory?.dartMessenger = dartMessenger
     }
 
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (attachedActivity == null) {
+            result.error("activity_detached", "Activity not attached", null)
+            return
+        }
+        val requiresView = setOf("takePicture", "startVideoRecording", "startVideoStreaming",
+            "startVideoRecordingAndStreaming", "stopRecordingOrStreaming", "stopRecording", "stopStreaming",
+            "pauseVideoRecording", "resumeVideoRecording", "getStreamStatistics", "switchCamera",
+            "switchFlashLight", "switchAudio", "setFilter", "removeFilter", "getHasAudio", "setHasAudio",
+            "getHasVideo", "setHasVideo", "prepareForVideoStreaming")
+        if (call.method in requiresView && getCameraView() == null) {
+            result.error("no_camera", "Mount CameraPreview before calling ${call.method}", null)
+            return
+        }
+        try {
         when (call.method) {
             "availableCameras" -> try {
                 Log.i("Stuff", "availableCameras")
@@ -102,7 +123,7 @@ class MethodCallHandlerImplNew(
             }
 
             "startVideoStreaming" -> {
-                Log.i("Stuff", "startVideoStreaming ${call.arguments}")
+                Log.i("Stuff", "startVideoStreaming")
                 getCameraView()?.startVideoStreaming(
                     call.argument("url"),
                     call.argument("bitrate"),
@@ -113,7 +134,7 @@ class MethodCallHandlerImplNew(
             }
 
             "startVideoRecordingAndStreaming" -> {
-                Log.i("Stuff", "startVideoRecordingAndStreaming ${call.arguments}")
+                Log.i("Stuff", "startVideoRecordingAndStreaming")
                 getCameraView()?.startVideoRecordingAndStreaming(
                     call.argument("filePath"),
                     call.argument("url"),
@@ -210,8 +231,8 @@ class MethodCallHandlerImplNew(
             }
             "setAudioSettings" -> {
                 val bitrate = call.argument<Int>("bitrate")
-                if (bitrate == null) {
-                    result.error("setAudioSettings", "bitrate is required", null)
+                if (bitrate == null || bitrate <= 0) {
+                    result.error("setAudioSettings", "bitrate must be > 0", null)
                 } else {
                     nativeViewFactory?.pendingAudioBitrate = bitrate
                     val view = getCameraView()
@@ -227,6 +248,17 @@ class MethodCallHandlerImplNew(
                 val width = call.argument<Int>("width")
                 val height = call.argument<Int>("height")
                 val frameInterval = call.argument<Int>("frameInterval")
+                require(bitrate == null || bitrate > 0) { "bitrate must be > 0" }
+                require((width == null) == (height == null)) { "Provide width and height together" }
+                require(width == null || (width > 0 && height!! > 0 && width % 2 == 0 && height % 2 == 0)) {
+                    "width and height must be positive even numbers"
+                }
+                require(frameInterval == null || frameInterval > 0) { "frameInterval must be > 0" }
+                if (width != null) {
+                    nativeViewFactory?.pendingVideoWidth = width
+                    nativeViewFactory?.pendingVideoHeight = height
+                }
+                if (frameInterval != null) nativeViewFactory?.pendingFrameInterval = frameInterval
                 if (bitrate != null) {
                     nativeViewFactory?.pendingVideoBitrate = bitrate
                 }
@@ -316,24 +348,18 @@ class MethodCallHandlerImplNew(
                     ?: result.error("no_camera", "Camera not initialized", null)
             }
             "setVideoCodec" -> {
-                val name = call.argument<String>("name")
-                nativeViewFactory?.pendingVideoCodec = name
+                val value = call.argument<String>("name")
+                val cached = cacheOnSuccess(result) { nativeViewFactory?.pendingVideoCodec = value }
                 val view = getCameraView()
-                if (view != null) {
-                    view.setVideoCodec(name, result)
-                } else {
-                    result.success(null)
-                }
+                if (view != null) view.setVideoCodec(value, cached)
+                else cached.success(null)
             }
             "setAudioCodec" -> {
-                val name = call.argument<String>("name")
-                nativeViewFactory?.pendingAudioCodec = name
+                val value = call.argument<String>("name")
+                val cached = cacheOnSuccess(result) { nativeViewFactory?.pendingAudioCodec = value }
                 val view = getCameraView()
-                if (view != null) {
-                    view.setAudioCodec(name, result)
-                } else {
-                    result.success(null)
-                }
+                if (view != null) view.setAudioCodec(value, cached)
+                else cached.success(null)
             }
             "setAudioProcessing" -> {
                 val echo = call.argument<Boolean>("echoCanceler")
@@ -367,25 +393,47 @@ class MethodCallHandlerImplNew(
                     result
                 ) ?: result.error("no_camera", "Camera not initialized", null)
             }
-            "setVideoSource" -> {
-                val mode = call.argument<String>("mode")
-                nativeViewFactory?.pendingVideoSource = mode
+            "setRtmpMetadata" -> {
+                val metadata = call.argument<Map<String, Any>>("metadata")
+                require(metadata != null && metadata.all { (key, value) ->
+                    key.isNotBlank() && (value is String || value is Boolean ||
+                        (value is Number && value.toDouble().isFinite()))
+                }) { "Metadata requires nonempty keys and finite scalar values" }
+                val cached = cacheOnSuccess(result) { nativeViewFactory?.pendingRtmpMetadata = metadata.toMap() }
                 val view = getCameraView()
-                if (view != null) {
-                    view.setVideoSource(mode, result)
-                } else {
-                    result.success(null)
-                }
+                if (view == null) cached.success(null) else view.setRtmpMetadata(metadata, cached)
+            }
+            "requestKeyFrame" -> getCameraView()?.requestKeyFrame(result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "setManualExposure" -> getCameraView()?.setManualExposure(
+                call.argument<Number>("iso")?.toInt(),
+                call.argument<Number>("exposureTimeNanos")?.toLong(), result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "setCaptureTelemetry" -> getCameraView()?.setCaptureTelemetry(
+                call.argument("enabled"), call.argument<Number>("intervalMs")?.toLong(), result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "getCameraControls" -> getCameraView()?.getCameraControls(result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "setZoom" -> getCameraView()?.setZoom(call.argument<Number>("zoom")?.toFloat(), result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "setAutoFocus" -> getCameraView()?.setAutoFocus(call.argument("enabled"), result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "tapToFocus" -> getCameraView()?.tapToFocus(
+                call.argument<Number>("x")?.toDouble(), call.argument<Number>("y")?.toDouble(), result)
+                ?: result.error("no_camera", "Camera not initialized", null)
+            "setVideoSource" -> {
+                val value = call.argument<String>("mode")
+                val cached = cacheOnSuccess(result) { nativeViewFactory?.pendingVideoSource = value }
+                val view = getCameraView()
+                if (view != null) view.setVideoSource(value, cached)
+                else cached.success(null)
             }
             "enableBufferAudio" -> {
-                val enable = call.argument<Boolean>("enable")
-                nativeViewFactory?.pendingUseBufferAudio = enable
+                val value = call.argument<Boolean>("enable")
+                val cached = cacheOnSuccess(result) { nativeViewFactory?.pendingUseBufferAudio = value }
                 val view = getCameraView()
-                if (view != null) {
-                    view.enableBufferAudio(enable, result)
-                } else {
-                    result.success(null)
-                }
+                if (view != null) view.enableBufferAudio(value, cached)
+                else cached.success(null)
             }
             "feedPcmAudio" -> {
                 getCameraView()?.feedPcmAudio(call.argument("bytes") as ByteArray?, result)
@@ -413,6 +461,12 @@ class MethodCallHandlerImplNew(
             }
             "dispose" -> {
                 Log.i("Stuff", "dispose")
+                handler?.removeCallbacksAndMessages(null)
+                pendingInitialization?.error("disposed", "Camera disposed during initialization", null)
+                pendingInitialization = null
+                pendingScreenResult?.error("disposed", "Camera disposed during screen capture request", null)
+                pendingScreenResult = null
+                disconnectScreenCaptureService()
                 val view = getCameraView()
                 if (view != null) {
                     try {
@@ -422,8 +476,12 @@ class MethodCallHandlerImplNew(
                     }
                 }
                 result.success(null)
+                nativeViewFactory?.pendingRtmpMetadata = null
                 nativeViewFactory?.pendingAudioBitrate = null
                 nativeViewFactory?.pendingVideoBitrate = null
+                nativeViewFactory?.pendingVideoWidth = null
+                nativeViewFactory?.pendingVideoHeight = null
+                nativeViewFactory?.pendingFrameInterval = null
                 nativeViewFactory?.pendingFrameRate = null
                 nativeViewFactory?.pendingForceBt709Color = null
                 nativeViewFactory?.pendingRtmpShouldSendPings = null
@@ -444,7 +502,20 @@ class MethodCallHandlerImplNew(
 
             else -> result.notImplemented()
         }
+            } catch (e: Exception) {
+            result.error("CameraError", e.message, null)
+        }
     }
+
+    private fun cacheOnSuccess(result: MethodChannel.Result, cache: () -> Unit): MethodChannel.Result =
+        object : MethodChannel.Result {
+            override fun success(reply: Any?) {
+                cache()
+                result.success(reply)
+            }
+            override fun error(code: String, message: String?, details: Any?) = result.error(code, message, details)
+            override fun notImplemented() = result.notImplemented()
+        }
 
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     private fun requestScreenCapture(result: MethodChannel.Result) {
@@ -459,6 +530,16 @@ class MethodCallHandlerImplNew(
         }
         val mgr = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         ensureScreenCaptureListener()
+        if (getCameraView() == null) {
+            result.error("requestScreenCapture", "Mount CameraPreview first", null)
+            return
+        }
+        if (getCameraView()?.hasActiveCapture() == true) {
+            result.error("requestScreenCapture", "Stop streaming and recording before requesting screen capture", null)
+            return
+        }
+        disconnectScreenCaptureService()
+        activity.stopService(Intent(activity, ScreenCaptureService::class.java))
         pendingScreenResult = result
         activity.startActivityForResult(mgr.createScreenCaptureIntent(), SCREEN_CAPTURE_REQUEST)
     }
@@ -468,40 +549,109 @@ class MethodCallHandlerImplNew(
         if (screenCaptureListenerRegistered) return
         val binding = activityBinding ?: return
         screenCaptureListenerRegistered = true
-        binding.addActivityResultListener { requestCode, resultCode, data ->
-            if (requestCode != SCREEN_CAPTURE_REQUEST) return@addActivityResultListener false
+        val listener = PluginRegistry.ActivityResultListener { requestCode, resultCode, data ->
+            if (requestCode != SCREEN_CAPTURE_REQUEST) return@ActivityResultListener false
             val pending = pendingScreenResult
-            pendingScreenResult = null
-            if (pending == null) return@addActivityResultListener true
+            if (pending == null) return@ActivityResultListener true
             if (resultCode == Activity.RESULT_OK && data != null) {
-                val mgr = activity.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                val projection = mgr.getMediaProjection(resultCode, data)
                 val view = getCameraView()
-                if (projection != null && view != null) {
-                    view.attachScreenMediaProjection(projection, pending)
-                } else {
-                    try {
-                        projection?.stop()
-                    } catch (_: Exception) {
+                if (view == null) {
+                    pendingScreenResult = null
+                    pending.error("requestScreenCapture", "Mount CameraPreview first", null)
+                    return@ActivityResultListener true
+                }
+                val context = activity.applicationContext
+                val intent = Intent(context, ScreenCaptureService::class.java)
+                val connection = object : ServiceConnection {
+                    override fun onServiceConnected(name: ComponentName, binder: IBinder) {
+                        val reply = pendingScreenResult
+                        pendingScreenResult = null
+                        if (reply == null) {
+                            disconnectScreenCaptureService()
+                            context.stopService(intent)
+                            return
+                        }
+                        try {
+                            val projection = (binder as ScreenCaptureService.CaptureBinder)
+                                .createProjection(resultCode, data, view.usesMicrophone())
+                            val currentView = getCameraView()
+                            if (currentView == null) {
+                                projection.stop()
+                                reply.error("requestScreenCapture", "Camera preview was disposed", null)
+                            } else currentView.attachScreenMediaProjection(projection, reply)
+                        } catch (e: Exception) {
+                            reply.error("requestScreenCapture", e.message, null)
+                            context.stopService(intent)
+                        } finally {
+                            disconnectScreenCaptureService()
+                        }
                     }
-                    pending.error(
-                        "requestScreenCapture",
-                        if (projection == null) {
-                            "Failed to create MediaProjection"
-                        } else {
-                            "Camera not initialized; mount CameraPreview before requestScreenCapture"
-                        },
-                        null
-                    )
+                    override fun onServiceDisconnected(name: ComponentName) {
+                        pendingScreenResult?.error("requestScreenCapture", "Screen capture service disconnected", null)
+                        pendingScreenResult = null
+                        disconnectScreenCaptureService()
+                    }
+                }
+                screenCaptureConnection = connection
+                try {
+                    if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
+                    else context.startService(intent)
+                    check(context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) {
+                        "Unable to bind screen capture service"
+                    }
+                } catch (e: Exception) {
+                    pendingScreenResult = null
+                    disconnectScreenCaptureService()
+                    context.stopService(intent)
+                    pending.error("requestScreenCapture", e.message, null)
                 }
             } else {
+                pendingScreenResult = null
                 pending.error("requestScreenCapture", "User denied or cancelled", null)
             }
             true
         }
+        screenCaptureListener = listener
+        binding.addActivityResultListener(listener)
+    }
+
+    private fun disconnectScreenCaptureService() {
+        screenCaptureConnection?.let { connection ->
+            attachedActivity?.applicationContext?.let { context ->
+                runCatching { context.unbindService(connection) }
+            }
+        }
+        screenCaptureConnection = null
+    }
+
+    fun attachActivity(binding: ActivityPluginBinding) {
+        attachedActivity = binding.activity
+        registeredFactory.activity = binding.activity
+        registeredFactory.cameraNativeView?.reattachActivity(binding.activity)
+        activityBinding = binding
+    }
+
+    fun detachActivity(releaseView: Boolean = true) {
+        handler?.removeCallbacksAndMessages(null)
+        pendingInitialization?.error("activity_detached", "Activity detached during initialization", null)
+        pendingInitialization = null
+        disconnectScreenCaptureService()
+        attachedActivity?.stopService(Intent(attachedActivity, ScreenCaptureService::class.java))
+        pendingScreenResult?.error("activity_detached", "Activity detached during screen capture request", null)
+        pendingScreenResult = null
+        if (releaseView) {
+            getCameraView()?.dispose()
+            registeredFactory.cameraNativeView = null
+        } else getCameraView()?.detachActivity()
+        registeredFactory.activity = null
+        activityBinding = null
+        attachedActivity = null
     }
 
     fun stopListening() {
+        detachActivity()
+        dartMessenger?.dispose()
+        registeredFactory.dartMessenger = null
         methodChannel.setMethodCallHandler(null)
     }
 
@@ -512,8 +662,7 @@ class MethodCallHandlerImplNew(
             handler!!
         } else {
             // Re-init after dispose (e.g. hot restart) - recreate handler and dartMessenger
-            val handlerThread = HandlerThread("WorkerThread").apply { start() }
-            Handler(handlerThread.looper).also {
+            Handler(android.os.Looper.getMainLooper()).also {
                 handler = it
                 dartMessenger = DartMessenger(messenger, id)
             }
@@ -522,7 +671,9 @@ class MethodCallHandlerImplNew(
             result.error("activity_destroyed", "Activity is finishing, cannot initialize camera", null)
             return
         }
+        pendingInitialization = result
         currentHandler.postDelayed({
+            pendingInitialization = null
             if (activity.isFinishing) {
                 activity.runOnUiThread { result.error("activity_destroyed", "Activity was destroyed during initialization", null) }
                 return@postDelayed
@@ -577,10 +728,8 @@ class MethodCallHandlerImplNew(
     // to be able to compile with <21 sdks for apps that want the camera and support earlier version.
     @RequiresApi(Build.VERSION_CODES.LOLLIPOP)
     private fun handleException(exception: Exception, result: MethodChannel.Result) {
-        if (exception is CameraAccessException) {
-            result.error("CameraAccess", exception.message, null)
-        }
-        throw (exception as RuntimeException)
+        result.error(if (exception is CameraAccessException) "CameraAccess" else "CameraError",
+            exception.message, null)
     }
 
     private fun getCameraView(): CameraNativeView? = nativeViewFactory?.cameraNativeView

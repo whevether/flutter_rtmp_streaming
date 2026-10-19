@@ -2,7 +2,6 @@ package com.app.rtmp_streaming
 import android.app.Activity
 import android.os.Build
 import android.util.Log
-import androidx.annotation.NonNull
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
@@ -25,14 +24,18 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
     private var methodCallHandler: MethodCallHandlerImplNew? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null
     private var activityBinding: ActivityPluginBinding? = null
+    private var nativeViewFactory: NativeViewFactory? = null
 
-    override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+    override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         Log.v(TAG, "onAttachedToEngine $flutterPluginBinding")
         this.flutterPluginBinding = flutterPluginBinding
     }
 
-    override fun onDetachedFromEngine(@NonNull binding: FlutterPlugin.FlutterPluginBinding) {
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         Log.v(TAG, "onDetachedFromEngine $binding")
+        methodCallHandler?.stopListening()
+        methodCallHandler = null
+        nativeViewFactory = null
         flutterPluginBinding = null
     }
 
@@ -45,12 +48,18 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
             // If the sdk is less than 21 (min sdk for Camera2) we don't register the plugin.
             return
         }
+        val factory = nativeViewFactory ?: NativeViewFactory(activity).also {
+            platformViewRegistry.registerViewFactory("hybrid-view-type", it)
+            nativeViewFactory = it
+        }
+        factory.activity = activity
         methodCallHandler = MethodCallHandlerImplNew(
             activity,
             messenger,
             CameraPermissions(),
             permissionsRegistry,
-            platformViewRegistry)
+            platformViewRegistry,
+            factory)
     }
 
     override fun onDetachedFromActivity() {
@@ -62,7 +71,8 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        onAttachedToActivity(binding)
+        activityBinding = binding
+        methodCallHandler?.attachActivity(binding) ?: onAttachedToActivity(binding)
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -84,6 +94,7 @@ public class RtmppublisherPlugin : FlutterPlugin, ActivityAware {
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
-        onDetachedFromActivity()
+        methodCallHandler?.detachActivity(releaseView = false)
+        activityBinding = null
     }
 }

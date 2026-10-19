@@ -1,3 +1,15 @@
+## 2.2.0
+
+- Merge PR #14 with fixes for CameraX idle recording, audio preparation, snapshots, encoder/source release, surface loss and independent recording/streaming state.
+- Use protocol-specific StreamBase clients so RTMP/RTSP can use AV1, VP8, VP9 and the new audio codecs. Validate URLs and protocol/codec combinations before replacing a session; default WHIP audio to OPUS, with codec-appropriate capture rates.
+- Add Android `setRtmpMetadata`, `requestKeyFrame`, `getCameraControls`, `setZoom`, `setAutoFocus`, `tapToFocus`, Camera2 `setManualExposure` and rate-limited `setCaptureTelemetry`.
+- Apply custom dimensions and keyframe intervals on prepare; retain mute, filters, overlays and pitch across session recreation. Fix asynchronous video-overlay preparation and player resource leaks. Recreate the queue bitrate adapter using the configured bitrate budget.
+- Add the MediaProjection foreground service and handle consent cancellation/revocation. Screen sessions require fresh consent after stopping; do not reuse Android 14+ capture tokens.
+- Fix permission result handling, Activity reattachment, pending initialization cleanup and calls before the platform preview mounts. Isolate stale session callbacks and multi-destination retries; preserve `destinationId` in events.
+- Enable TLS hostname verification for RTMPS/RTSPS; disable native client logs by default and avoid logging stream URLs/tokens.
+- Upgrade AGP to 9.4.1, Gradle to 9.8.1 (with checksum), Kotlin to 2.4.21, AndroidX Annotation to 1.11.0 and compile SDK to 37.2. Keep stable NDK 30.0.16248370 / Build Tools 37.0.0. Update example packages, pin permission_handler and require Flutter >=3.44 / Dart >=3.12. RootEncoder 2.8.1 and HaishinKit SPM 2.2.5 are already current; CocoaPods remains at its latest published HaishinKit 2.0.9 / SRTHaishinKit 2.0.8.
+- Expand regression tests and demonstrate the Android controls, codecs, sources and metadata. Hardware capture, live servers and iOS compilation still require device/platform validation.
+
 ## 2.1.1
 
 1. **Android**: Fix front camera resetting to rear on `startVideoStreaming` (camera2 / CameraX / WHIP / StreamBase / multi / record).

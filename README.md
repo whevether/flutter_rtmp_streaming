@@ -21,7 +21,7 @@ Pass an explicit `StreamingProtocol` (default `rtmp`). iOS WHIP/WHEP use `RTCHai
 ## ⚙️ Technical Foundation
 - **Android**: Based on [`com.github.pedroSG94.RootEncoder:library:2.8.1`](https://github.com/pedroSG94/RootEncoder) (+ `extra-sources` for CameraX / UVC)  
 - **iOS**: Based on [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift) (includes `SRTHaishinKit`, `RTCHaishinKit` for WHIP/WHEP alpha)  
-- **Android build**: AGP **9.4.0**, Gradle **9.7.1**, Kotlin DSL 
+- **Android build**: AGP **9.4.1**, Gradle **9.8.1**, Kotlin **2.4.21**, compile SDK **37.2** / Build Tools **37.0.0** / NDK **30.0.16248370**
 
 By leveraging these mature libraries, `rtmp_streaming` provides a consistent cross-platform API interface, reducing development complexity.
 
@@ -91,10 +91,10 @@ Since HaishinKit supports RTMP **playback** as well as publishing:
 - 🔇 AEC / NS: `setAudioProcessing`  
 - 📷 Video source: `setVideoSource` (`camera2` / `cameraX` / `uvc` / `screen`)
   - Preserves front/back on stream start for `camera2` / `cameraX` (UVC/screen have no facing)
-  - Idle preview stays Camera2 until streaming; after stop, preview returns to Camera2
+  - Idle preview defaults to CameraX; an explicit Camera2 selection is also used for idle preview. UVC/screen use a camera placeholder before streaming or recording.
   - Filters / mute / flashlight / AE·WB / pitch route to the active StreamBase or WHIP session when live
 - 🖥️ Screen capture permission: `requestScreenCapture` (required before `VideoSourceType.screen`)
-- 🎤 Custom PCM: `enableBufferAudio` / `feedPcmAudio` (enabling while GenericCamera2 is live migrates to StreamBase)
+- 🎤 Custom PCM: `enableBufferAudio` / `feedPcmAudio` (single-destination StreamBase sessions)
 - 🎨 BT.709 encoding: `setForceBt709Color` (RootEncoder 2.7.0+)  
 - 📶 RTMP ping / RTT: `setRtmpShouldSendPings` (RootEncoder 2.7.0+, RTMP only)  
 - 📊 Queue stats in `getStreamStatistics`: `queueBytesOut`, `bytesOutPerSecond`, `queueCongestionPercent`, `totalBytesOut`  
@@ -224,8 +224,8 @@ await controller.startVideoStreaming(url);
 | Parameter | Cross-platform | Notes |
 |-----------|----------------|-------|
 | `bitrate` | ✅ | Android can hot-update while live via `setVideoBitrateOnFly`. |
-| `width` / `height` | Partial | Prefer before go-live. |
-| `frameInterval` | Mostly iOS | Keyframe interval (seconds). |
+| `width` / `height` | ✅ | Positive even dimensions; Android applies them to the next encoding session. |
+| `frameInterval` | ✅ | Positive keyframe interval in seconds; Android applies it on the next prepare. |
 | `profileLevel` | iOS only | H.264 profile/level string. |
 | `expectedFrameRate` | iOS only | RTMP onMetaData `framerate` (2.2.2+). |
 | `bitRateMode` | iOS only | `average` / `constant` (iOS 16+) / `variable` (iOS 26+). |
@@ -337,10 +337,10 @@ await controller.stopMultiStreaming();
 
 ### Android: `setVideoSource` / `enableBufferAudio`
 
-- **`setVideoSource`**: `camera2` (default), `cameraX`, `uvc`, `screen`. Call `requestScreenCapture` before `screen`.
+- **`setVideoSource`**: `camera2`, `cameraX` (default), `uvc`, `screen`. Call `requestScreenCapture` before `screen`.
 - **Facing**: On `startVideoStreaming`, `camera2` / `cameraX` re-apply the current front/back selection. UVC and screen have no lens facing. `switchCamera` while streaming UVC/screen returns an error.
-- **Preview**: Idle preview remains Camera2 until a StreamBase/WHIP session starts; after stop, preview returns to Camera2.
-- **`enableBufferAudio(true)`**: If GenericCamera2 is already streaming, the session is migrated to StreamBase (same URL) so `feedPcmAudio` can attach.
+- **Preview**: Idle preview defaults to CameraX. Camera2 uses its own selected source; UVC/screen return to a camera preview after streaming stops.
+- **`enableBufferAudio(true)`**: Replaces microphone PCM in a single-destination session. For `enableAudio: false`, enable buffer audio before starting the stream. Multi streaming does not support buffer audio.
 
 ### Android: `lockExposure` / `unlockExposure` / `isExposureLocked`
 - **Purpose**: Lock / unlock Camera2 auto-exposure (avoids flicker from faces or lighting changes).
@@ -378,3 +378,56 @@ await controller.startVideoStreaming(url);
 ## 🚀 Conclusion
 `rtmp_streaming` provides cross-platform streaming and recording for Flutter.  
 Since **1.0.8**, temporary audio/video mute, encoder settings, and frame rate APIs are aligned on both platforms; since **2.0.1**, Android can safely set encoder options before `CameraPreview` mounts (cached, then applied). Since **2.1.0**, Android multi-streaming / codecs / video sources ship with RootEncoder 2.8.1, and `CameraValue.isStreaming` replaces `isStreamingVideoRtmp`. **2.1.1** fixes Android front-camera reset on stream start and routes Android-only controls through CameraX / WHIP / StreamBase sessions. iOS retains playback and multitasking extras; Android retains filters, BT.709, RTT, and queue stats.
+
+
+## Android 2.2 integration and verification
+
+Requires Flutter **3.44+** / Dart **3.12+**. Development checks use Flutter 3.47.7 and Java 21. This release changes Android idle preview to CameraX and uses protocol-specific RootEncoder streams. Select Camera2 for exact camera IDs, AE/WB locks and manual capture controls; CameraX selection preserves front/back facing. Codec support also depends on the device encoder and server.
+
+| Protocol | Video codecs | Audio codecs |
+| --- | --- | --- |
+| RTMP / RTSP | H264, H265, AV1, VP8, VP9 | AAC, HE-AAC, OPUS, G711 |
+| SRT / UDP | H264, H265 | AAC, HE-AAC, OPUS |
+| WHIP | RootEncoder-supported WebRTC codecs; server support required | OPUS (default), G711 |
+
+An explicit incompatible codec is rejected. Stop streaming and recording before changing codecs. Prefer H264/AAC for broadly compatible MP4 recording; enumerating a codec does not guarantee recording/container support on every device. WHIP defaults to OPUS unless an audio codec was explicitly selected.
+
+```dart
+await controller.setRtmpMetadata({'application': 'my-app', 'session': 42});
+final controls = await controller.getCameraControls();
+await controller.setZoom(2.0.clamp(controls.minZoom, controls.maxZoom));
+await controller.setAutoFocus(true);
+await controller.tapToFocus(x: 0.5, y: 0.5);
+// Call while streaming or recording:
+await controller.requestKeyFrame();
+
+// Camera2 extensions (after its preview is active):
+await controller.setVideoSource(VideoSourceType.camera2);
+await controller.setManualExposure(iso: 200, exposureTimeNanos: 10000000);
+await controller.setCaptureTelemetry(true, intervalMs: 1000);
+// controller.value.event: eventType == 'capture_statistics', captureStatistics map.
+await controller.setManualExposure(); // restore automatic exposure
+await controller.setCaptureTelemetry(false);
+```
+
+RTMP metadata accepts strings, booleans and finite numbers, and must be set before streaming. An empty map clears it. New session setup restores mute, filters, overlays and pitch; ISO/exposure must fit the selected Camera2 sensor. Queue adaptation uses the configured video+audio budget. Multi-destination retry/disconnect events carry `destinationId`; stopping one destination preserves the others, and statistics/ABR use the first active destination.
+
+Custom PCM uses signed little-endian PCM16: stereo 32000 Hz for AAC/HE-AAC, stereo 48000 Hz for OPUS, mono 8000 Hz for G711. Supply complete frames while the buffer source is running. The latest RootEncoder IPv6, timestamp, queue and source fixes are inherited; choose an IPv6-capable endpoint/network when using IPv6.
+
+Screen capture requires a mounted `CameraPreview`, foreground Activity and fresh `requestScreenCapture` consent before each session. The plugin owns a MediaProjection foreground service, with microphone service type when microphone capture is enabled. Stopping capture or disposing the preview releases it. Android 14+ authorization tokens are not reused: screen streams without an active recording stop on surface loss and require consent again. Multi streams require an explicit restart after surface loss. Physical-camera recordings are finalized on surface loss; camera streams can resume when the surface returns. This is not an unattended background-camera service.
+
+The example declares and requests Android 17 `ACCESS_LOCAL_NETWORK`; host applications targeting Android 17+ must do the same when connecting to a LAN server. App-private recording does not require external-storage permission. RTMPS/RTSPS enable TLS hostname checks, so use a certificate matching the server hostname.
+
+Validation commands:
+
+```sh
+flutter pub get
+flutter analyze
+flutter test
+cd example && flutter test && flutter build apk --debug
+cd android && ./gradlew :rtmp_streaming:testDebugUnitTest :rtmp_streaming:lintDebug :app:assembleDebug
+```
+
+Tests cover controller state/failure handling, snapshot overlap, event propagation, URL/codec validation and permission callbacks. Builds and lint do not establish camera output, audio/video synchronization, UVC hardware, background recovery or server interoperability. Before publishing an app, test front/back switching, preview → record → stream → stop, audio-disabled capture, screen consent/revocation, activity recreation and multi-destination failures on the target Android devices and servers. iOS compilation was not part of this Android verification.
+
+Dependency sources: [RootEncoder releases](https://github.com/pedroSG94/RootEncoder/releases), [HaishinKit releases](https://github.com/HaishinKit/HaishinKit.swift/releases), [CocoaPods HaishinKit](https://cocoapods.org/pods/HaishinKit), [CocoaPods SRTHaishinKit](https://cocoapods.org/pods/SRTHaishinKit). SPM remains at HaishinKit 2.2.5; CocoaPods remains at the latest versions published there (2.0.9 / 2.0.8).

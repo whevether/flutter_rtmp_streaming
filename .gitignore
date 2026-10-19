@@ -37,3 +37,6 @@ doc/api/
 !rtmp_streaming.iml
 fastlane/report.xml
 *pubspec.lock
+
+# Keep the example application dependency resolution reproducible.
+!example/pubspec.lock

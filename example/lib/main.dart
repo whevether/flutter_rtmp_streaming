@@ -35,7 +35,7 @@ IconData getCameraLensIcon(CameraLensDirection? direction) {
 }
 
 void logError(String code, String message) =>
-    print('Error: $code\nError Message: $message');
+    debugPrint('Error: $code\nError Message: $message');
 
 class CameraExampleHomeState extends State<CameraExampleHome>
     with WidgetsBindingObserver {
@@ -50,8 +50,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   bool enableAudio = true; // 是否启用音频
   bool isFlashLight = false; // false表示关闭闪光灯，true表示打开闪光灯
   CameraDescription? _cameraDesc;
-  final TextEditingController _textFieldController =
-      TextEditingController(text: "rtmp://192.168.2.81/live/livestream");
+  final TextEditingController _textFieldController = TextEditingController(
+    text: "rtmp://192.168.2.81/live/livestream",
+  );
   late final TextEditingController _multiUrl1Controller;
   late final TextEditingController _multiUrl2Controller;
   StreamingProtocol _selectedProtocol = StreamingProtocol.rtmp;
@@ -66,8 +67,10 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   }
 
   /// iOS multi-stream demo: RTMP + SRT.
-  List<StreamingProtocol> get _multiProtocols =>
-      const [StreamingProtocol.rtmp, StreamingProtocol.srt];
+  List<StreamingProtocol> get _multiProtocols => const [
+    StreamingProtocol.rtmp,
+    StreamingProtocol.srt,
+  ];
 
   /// RootEncoder 2.7.0+：BT.709 与 RTMP ping/RTT 示例
   bool _forceBt709 = false;
@@ -79,6 +82,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
 
   /// HaishinKit 2.2.5+：分屏/多任务时保持相机（iOS 17+）
   bool _iosMultitaskingCamera = false;
+  VideoSourceType _videoSource = VideoSourceType.cameraX;
+  VideoCodecType _videoCodec = VideoCodecType.h264;
+  AudioCodecType? _audioCodec;
 
   bool get isStreaming => controller.value.isStreaming ?? false;
 
@@ -150,19 +156,21 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         actions: Platform.isAndroid
             ? [
                 ElevatedButton(
-                    onPressed: isControllerInitialized
-                        ? () async {
-                            await controller.setFilter(0);
-                          }
-                        : null,
-                    child: Text("set filter")),
+                  onPressed: isControllerInitialized
+                      ? () async {
+                          await controller.setFilter(0);
+                        }
+                      : null,
+                  child: Text("set filter"),
+                ),
                 ElevatedButton(
-                    onPressed: isControllerInitialized
-                        ? () async {
-                            await controller.removeFilter(0);
-                          }
-                        : null,
-                    child: Text("remove filter")),
+                  onPressed: isControllerInitialized
+                      ? () async {
+                          await controller.removeFilter(0);
+                        }
+                      : null,
+                  child: Text("remove filter"),
+                ),
                 ElevatedButton(
                   onPressed: isControllerInitialized
                       ? () async {
@@ -181,20 +189,12 @@ class CameraExampleHomeState extends State<CameraExampleHome>
             child: Container(
               decoration: BoxDecoration(
                 color: Colors.black,
-                border: Border.all(
-                  color: color,
-                  width: 3.0,
-                ),
+                border: Border.all(color: color, width: 3.0),
               ),
-              child: Center(
-                child: _cameraPreviewWidget(),
-              ),
+              child: Center(child: _cameraPreviewWidget()),
             ),
           ),
-          Expanded(
-            flex: 1,
-            child: _captureControlRowWidget(),
-          )
+          Expanded(flex: 1, child: _captureControlRowWidget()),
         ],
       ),
       floatingActionButton: FloatingActionButton(
@@ -255,25 +255,15 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         // Only Android has implemented it
         if (Platform.isAndroid)
           ElevatedButton.icon(
-            icon: const Icon(
-              Icons.camera_alt,
-              color: Colors.white,
-            ),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blue,
-            ),
-            label: Text(
-              "Take Picture",
-              style: TextStyle(color: Colors.white),
-            ),
+            icon: const Icon(Icons.camera_alt, color: Colors.white),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            label: Text("Take Picture", style: TextStyle(color: Colors.white)),
             onPressed:
                 (isControllerInitialized && (isRecordingVideo || isStreaming))
-                    ? onTakePictureButtonPressed
-                    : null,
+                ? onTakePictureButtonPressed
+                : null,
           ),
-        SizedBox(
-          width: 5,
-        ),
+        SizedBox(width: 5),
         // Record Localhost video
         ElevatedButton.icon(
           icon: Icon(
@@ -297,9 +287,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                 }
               : null,
         ),
-        SizedBox(
-          width: 5,
-        ),
+        SizedBox(width: 5),
         ElevatedButton.icon(
           icon: Icon(
             !isStreaming ? Icons.play_arrow : Icons.stop,
@@ -361,26 +349,27 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         // Only Android has implemented it
         if (Platform.isAndroid)
           ElevatedButton.icon(
-              icon: Icon(
-                isRecordingPaused ? Icons.play_arrow : Icons.pause,
-                color: Colors.white,
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: !isStreamingPaused ? Colors.blue : Colors.red,
-              ),
-              label: Text(
-                !isRecordingPaused ? "pause Recording" : "resume Recording",
-                style: TextStyle(color: Colors.white),
-              ),
-              onPressed: isControllerInitialized && isRecordingVideo
-                  ? () async {
-                      if (isRecordingPaused) {
-                        await resumeVideoRecording();
-                      } else {
-                        await pauseVideoRecording();
-                      }
+            icon: Icon(
+              isRecordingPaused ? Icons.play_arrow : Icons.pause,
+              color: Colors.white,
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: !isStreamingPaused ? Colors.blue : Colors.red,
+            ),
+            label: Text(
+              !isRecordingPaused ? "pause Recording" : "resume Recording",
+              style: TextStyle(color: Colors.white),
+            ),
+            onPressed: isControllerInitialized && isRecordingVideo
+                ? () async {
+                    if (isRecordingPaused) {
+                      await resumeVideoRecording();
+                    } else {
+                      await pauseVideoRecording();
                     }
-                  : null),
+                  }
+                : null,
+          ),
         // stop all Streaming and Recording
         ElevatedButton.icon(
           icon: Icon(
@@ -388,8 +377,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
             color: Colors.white,
           ),
           style: ElevatedButton.styleFrom(
-            backgroundColor:
-                !(isRecordingVideo && isStreaming) ? Colors.blue : Colors.red,
+            backgroundColor: !(isRecordingVideo && isStreaming)
+                ? Colors.blue
+                : Colors.red,
           ),
           label: Text(
             !(isRecordingVideo && isStreaming)
@@ -408,9 +398,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
               : null,
         ),
         _cameraTogglesRowWidget(),
-        const SizedBox(
-          width: 5,
-        ),
+        const SizedBox(width: 5),
         Text('${enableAudio ? 'Enable' : 'Disable'} Audio'),
         Switch(
           value: enableAudio,
@@ -425,9 +413,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
             }
           },
         ),
-        const SizedBox(
-          width: 5,
-        ),
+        const SizedBox(width: 5),
         Text('${isFlashLight ? 'Enable' : 'Disable'} FlashLight'),
         Switch(
           value: isFlashLight,
@@ -445,6 +431,119 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         ),
         if (Platform.isAndroid) ...[
           const SizedBox(height: 8),
+          DropdownButton<VideoSourceType>(
+            value: _videoSource,
+            items: VideoSourceType.values
+                .map(
+                  (source) => DropdownMenuItem(
+                    value: source,
+                    child: Text('Source: ${source.name}'),
+                  ),
+                )
+                .toList(),
+            onChanged:
+                isControllerInitialized && !isStreaming && !isRecordingVideo
+                ? (source) async {
+                    if (source == null) return;
+                    try {
+                      if (source == VideoSourceType.screen) {
+                        await controller.requestScreenCapture();
+                      }
+                      await controller.setVideoSource(source);
+                      if (mounted) setState(() => _videoSource = source);
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+          ),
+          DropdownButton<VideoCodecType>(
+            value: _videoCodec,
+            items: VideoCodecType.values
+                .map(
+                  (codec) => DropdownMenuItem(
+                    value: codec,
+                    child: Text('Video: ${codec.name}'),
+                  ),
+                )
+                .toList(),
+            onChanged:
+                isControllerInitialized && !isStreaming && !isRecordingVideo
+                ? (codec) async {
+                    if (codec == null) return;
+                    try {
+                      await controller.setVideoCodec(codec);
+                      if (mounted) setState(() => _videoCodec = codec);
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+          ),
+          DropdownButton<AudioCodecType>(
+            value: _audioCodec,
+            hint: const Text('Audio: AAC / WHIP OPUS'),
+            items: AudioCodecType.values
+                .map(
+                  (codec) => DropdownMenuItem(
+                    value: codec,
+                    child: Text('Audio: ${codec.name}'),
+                  ),
+                )
+                .toList(),
+            onChanged:
+                isControllerInitialized && !isStreaming && !isRecordingVideo
+                ? (codec) async {
+                    if (codec == null) return;
+                    try {
+                      await controller.setAudioCodec(codec);
+                      if (mounted) setState(() => _audioCodec = codec);
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+          ),
+          ElevatedButton(
+            onPressed: isControllerInitialized && !_isMultiStreaming
+                ? () async {
+                    try {
+                      await controller.tapToFocus();
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+            child: const Text('Focus center'),
+          ),
+          ElevatedButton(
+            onPressed: isControllerInitialized && !_isMultiStreaming
+                ? () async {
+                    try {
+                      final controls = await controller.getCameraControls();
+                      await controller.setZoom(
+                        2.0.clamp(controls.minZoom, controls.maxZoom),
+                      );
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+            child: const Text('Zoom 2×'),
+          ),
+          ElevatedButton(
+            onPressed:
+                isControllerInitialized && (isStreaming || isRecordingVideo)
+                ? () async {
+                    try {
+                      await controller.requestKeyFrame();
+                    } on CameraException catch (e) {
+                      _showCameraException(e);
+                    }
+                  }
+                : null,
+            child: const Text('Request keyframe'),
+          ),
           Text('BT.709 色彩 (RootEncoder 2.7+)'),
           Switch(
             value: _forceBt709,
@@ -488,7 +587,8 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                         setState(() => _exposureLocked = ok);
                         if (!ok) {
                           showInSnackBar(
-                              'Exposure lock failed (unsupported or camera not started)');
+                            'Exposure lock failed (unsupported or camera not started)',
+                          );
                         }
                       } else {
                         await controller.unlockExposure();
@@ -564,7 +664,8 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                         bitRateMode: 'average',
                       );
                       showInSnackBar(
-                          '已设置 expectedFrameRate=30、bitRateMode=average（2.2.2 onMetaData / 2.2.1 VBR 基础）');
+                        '已设置 expectedFrameRate=30、bitRateMode=average（2.2.2 onMetaData / 2.2.1 VBR 基础）',
+                      );
                     } on CameraException catch (e) {
                       _showCameraException(e);
                     }
@@ -627,8 +728,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   String timestamp() => DateTime.now().millisecondsSinceEpoch.toString();
 
   void showInSnackBar(String message) {
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   //init
@@ -637,7 +739,10 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       showInSnackBar("No available cameras");
       return;
     }
-    var cameraItem = cameras[1];
+    final cameraItem = cameras.firstWhere(
+      (camera) => camera.lensDirection == CameraLensDirection.front,
+      orElse: () => cameras.first,
+    );
     setState(() {
       _cameraDesc = cameraItem;
     });
@@ -651,6 +756,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
     if (Platform.isMacOS == false) {
       await Permission.camera.request();
       await Permission.microphone.request();
+      if (Platform.isAndroid) await Permission.accessLocalNetwork.request();
     }
     try {
       await controller.initialize(cameraDescription);
@@ -678,7 +784,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
           showInSnackBar('Camera error ${controller.value.errorDescription}');
           stopVideoStreaming();
         } else {
-          print('Event $event');
+          debugPrint('Event $event');
           showInSnackBar('Camera message ${controller.value.errorDescription}');
         }
       }
@@ -784,6 +890,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
         // await controller.setFrameRate(30);
         await controller.setForceBt709Color(_forceBt709);
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
+        await controller.setRtmpMetadata({
+          'application': 'rtmp_streaming_example',
+        });
       }
       await controller.startVideoStreaming(myUrl, protocol: _selectedProtocol);
       // await controller?.unlockExposure();
@@ -818,6 +927,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       if (Platform.isAndroid) {
         await controller.setForceBt709Color(_forceBt709);
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
+        await controller.setRtmpMetadata({
+          'application': 'rtmp_streaming_example',
+        });
       }
       await controller.startMultiStreaming(destinations);
       setState(() => _isMultiStreaming = true);
@@ -883,12 +995,19 @@ class CameraExampleHomeState extends State<CameraExampleHome>
       if (Platform.isAndroid) {
         await controller.setForceBt709Color(_forceBt709);
         await controller.setRtmpShouldSendPings(_rtmpShouldSendPings);
+        await controller.setRtmpMetadata({
+          'application': 'rtmp_streaming_example',
+        });
       }
       videoPath = filePath;
-      await controller.startVideoRecordingAndStreaming(videoPath!, myUrl,
-          protocol: _selectedProtocol);
+      await controller.startVideoRecordingAndStreaming(
+        videoPath!,
+        myUrl,
+        protocol: _selectedProtocol,
+      );
       showInSnackBar(
-          'Recording streaming (${_selectedProtocol.name}) video to $myUrl');
+        'Recording streaming (${_selectedProtocol.name}) video to $myUrl',
+      );
       await WakelockPlus.enable();
       _startAndroidStreamStatsTimer();
     } on CameraException catch (e) {
@@ -997,83 +1116,87 @@ class CameraExampleHomeState extends State<CameraExampleHome>
     }
 
     return await showDialog(
-        context: context,
-        builder: (context) {
-          return StatefulBuilder(
-            builder: (context, setDialogState) {
-              return AlertDialog(
-                title: Text('Url to Stream to'),
-                content: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    DropdownButtonFormField<StreamingProtocol>(
-                      key: ValueKey(selected),
-                      initialValue: selected,
-                      decoration: const InputDecoration(labelText: 'Protocol'),
-                      items: _availableProtocols
-                          .map((p) => DropdownMenuItem(
-                                value: p,
-                                child: Text(p.name.toUpperCase()),
-                              ))
-                          .toList(),
-                      onChanged: (value) {
-                        if (value == null) return;
-                        setDialogState(() {
-                          selected = value;
-                          // Seed a typical URL for the chosen protocol.
-                          switch (value) {
-                            case StreamingProtocol.rtmp:
-                              _textFieldController.text =
-                                  'rtmp://192.168.1.15/live/live';
-                            case StreamingProtocol.rtsp:
-                              _textFieldController.text =
-                                  'rtsp://192.168.1.15:8554/live';
-                            case StreamingProtocol.srt:
-                              _textFieldController.text =
-                                  'srt://192.168.1.15:10080?streamid=#!::r=live/livestream,m=publish';
-                            case StreamingProtocol.udp:
-                              _textFieldController.text =
-                                  'udp://192.168.1.15:5004';
-                            case StreamingProtocol.whip:
-                              _textFieldController.text =
-                                  'https://example.com/whip';
-                            case StreamingProtocol.whep:
-                              _textFieldController.text =
-                                  'https://example.com/whep';
-                          }
-                          result = _textFieldController.text;
-                        });
-                      },
-                    ),
-                    TextField(
-                      controller: _textFieldController,
-                      decoration:
-                          const InputDecoration(hintText: "Url to Stream to"),
-                      onChanged: (String str) => result = str,
-                    ),
-                  ],
-                ),
-                actions: <Widget>[
-                  TextButton(
-                    child: Text(
-                        MaterialLocalizations.of(context).cancelButtonLabel),
-                    onPressed: () {
-                      Navigator.of(context).pop();
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Text('Url to Stream to'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  DropdownButtonFormField<StreamingProtocol>(
+                    key: ValueKey(selected),
+                    initialValue: selected,
+                    decoration: const InputDecoration(labelText: 'Protocol'),
+                    items: _availableProtocols
+                        .map(
+                          (p) => DropdownMenuItem(
+                            value: p,
+                            child: Text(p.name.toUpperCase()),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      setDialogState(() {
+                        selected = value;
+                        // Seed a typical URL for the chosen protocol.
+                        switch (value) {
+                          case StreamingProtocol.rtmp:
+                            _textFieldController.text =
+                                'rtmp://192.168.1.15/live/live';
+                          case StreamingProtocol.rtsp:
+                            _textFieldController.text =
+                                'rtsp://192.168.1.15:8554/live';
+                          case StreamingProtocol.srt:
+                            _textFieldController.text =
+                                'srt://192.168.1.15:10080?streamid=#!::r=live/livestream,m=publish';
+                          case StreamingProtocol.udp:
+                            _textFieldController.text =
+                                'udp://192.168.1.15:5004';
+                          case StreamingProtocol.whip:
+                            _textFieldController.text =
+                                'https://example.com/whip';
+                          case StreamingProtocol.whep:
+                            _textFieldController.text =
+                                'https://example.com/whep';
+                        }
+                        result = _textFieldController.text;
+                      });
                     },
                   ),
-                  TextButton(
-                    child:
-                        Text(MaterialLocalizations.of(context).okButtonLabel),
-                    onPressed: () {
-                      _selectedProtocol = selected;
-                      Navigator.pop(context, result);
-                    },
-                  )
+                  TextField(
+                    controller: _textFieldController,
+                    decoration: const InputDecoration(
+                      hintText: "Url to Stream to",
+                    ),
+                    onChanged: (String str) => result = str,
+                  ),
                 ],
-              );
-            },
-          );
-        });
+              ),
+              actions: <Widget>[
+                TextButton(
+                  child: Text(
+                    MaterialLocalizations.of(context).cancelButtonLabel,
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                  },
+                ),
+                TextButton(
+                  child: Text(MaterialLocalizations.of(context).okButtonLabel),
+                  onPressed: () {
+                    _selectedProtocol = selected;
+                    Navigator.pop(context, result);
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void stopVideoStreaming() async {
@@ -1226,9 +1349,7 @@ class CameraExampleHomeState extends State<CameraExampleHome>
                       ),
                     ]);
                   },
-                  child: Text(
-                    MaterialLocalizations.of(context).okButtonLabel,
-                  ),
+                  child: Text(MaterialLocalizations.of(context).okButtonLabel),
                 ),
               ],
             );
@@ -1242,7 +1363,8 @@ class CameraExampleHomeState extends State<CameraExampleHome>
   void _showCameraException(CameraException e) {
     logError(e.code, e.description ?? "No description found");
     showInSnackBar(
-        'Error: ${e.code}\n${e.description ?? "No description found"}');
+      'Error: ${e.code}\n${e.description ?? "No description found"}',
+    );
   }
 }
 
@@ -1250,9 +1372,7 @@ class CameraApp extends StatelessWidget {
   const CameraApp({super.key});
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      home: CameraExampleHome(),
-    );
+    return MaterialApp(home: CameraExampleHome());
   }
 }
 
@@ -1263,7 +1383,7 @@ Future<void> main() async {
   try {
     WidgetsFlutterBinding.ensureInitialized();
     cameras = await availableCameras();
-    print("$cameras");
+    debugPrint("$cameras");
   } on CameraException catch (e) {
     logError(e.code, e.description ?? "No description found");
   }

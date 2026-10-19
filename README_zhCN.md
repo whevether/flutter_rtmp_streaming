@@ -22,7 +22,7 @@
 ## ⚙️ 技术基础
 - **Android**：基于 [`com.github.pedroSG94.RootEncoder:library:2.8.1`](https://github.com/pedroSG94/RootEncoder)（含 `extra-sources`：CameraX / UVC）  
 - **iOS**：基于 [HaishinKit 2.2.5](https://github.com/HaishinKit/HaishinKit.swift)（含 `SRTHaishinKit`，以及用于 WHIP/WHEP alpha 的 `RTCHaishinKit`）  
-- **Android 构建**：AGP **9.4.0**、Gradle **9.7.1**、Kotlin DSL  
+- **Android 构建**：AGP **9.4.1**、Gradle **9.8.1**、Kotlin DSL
 
 通过这两个成熟的底层库，`rtmp_streaming` 提供了跨平台一致的 API 接口，简化了开发者的使用成本。
 
@@ -93,10 +93,10 @@
 - 🔇 回声消除 / 降噪：`setAudioProcessing`  
 - 📷 视频源：`setVideoSource`（`camera2` / `cameraX` / `uvc` / `screen`）
   - `camera2` / `cameraX` 开流时保持当前前后置（UVC/screen 无镜头朝向）
-  - 开流前预览仍为 Camera2；停流后预览回到 Camera2
+  - 默认空闲预览为 CameraX；显式选择 Camera2 时预览也使用 Camera2。UVC/screen 在采集前使用相机占位预览。
   - 推流中滤镜 / 静音 / 闪光灯 / 曝光·白平衡 / 变调会接到当前 StreamBase 或 WHIP 会话
 - 🖥️ 屏幕采集授权：`requestScreenCapture`（`VideoSourceType.screen` 前必调）
-- 🎤 自定义 PCM：`enableBufferAudio` / `feedPcmAudio`（GenericCamera2 推流中开启会迁到 StreamBase）
+- 🎤 自定义 PCM：`enableBufferAudio` / `feedPcmAudio`（单路 StreamBase 会话）
 - 🎨 BT.709 编码：`setForceBt709Color`（RootEncoder 2.7.0+）  
 - 📶 RTMP Ping / RTT：`setRtmpShouldSendPings`（RootEncoder 2.7.0+，仅 RTMP）  
 - 📊 队列统计：`getStreamStatistics` 的 `queueBytesOut`、`bytesOutPerSecond`、`queueCongestionPercent`、`totalBytesOut`  
@@ -230,8 +230,8 @@ await controller.startVideoStreaming(url);
 | 参数 | 双端 | 说明 |
 |------|------|------|
 | `bitrate` | ✅ | 视频码率（bps）。Android 推流中可热更新。 |
-| `width` / `height` | 部分 | 宜在开播前设置；直播中修改受原生库限制。 |
-| `frameInterval` | iOS 为主 | 关键帧间隔（秒）。 |
+| `width` / `height` | ✅ | 正偶数；Android 于下一次编码会话生效。 |
+| `frameInterval` | ✅ | 正数，单位秒；Android 于下一次 prepare 生效。 |
 | `profileLevel` | 仅 iOS | H.264 Profile/Level 字符串。 |
 | `expectedFrameRate` | 仅 iOS | 期望帧率；写入 RTMP onMetaData `framerate`（2.2.2+）。 |
 | `bitRateMode` | 仅 iOS | `"average"` / `"constant"`（iOS 16+）/ `"variable"`（iOS 26+）。 |
@@ -347,10 +347,10 @@ await controller.stopMultiStreaming();
 
 ### Android：`setVideoSource` / `enableBufferAudio`
 
-- **`setVideoSource`**：`camera2`（默认）、`cameraX`、`uvc`、`screen`。使用 `screen` 前须先 `requestScreenCapture`。
+- **`setVideoSource`**：`camera2`、`cameraX`（默认）、`uvc`、`screen`。使用 `screen` 前须先 `requestScreenCapture`。
 - **朝向**：`startVideoStreaming` 时，`camera2` / `cameraX` 会重新应用当前前后置；UVC、screen 无镜头朝向。UVC/screen 推流中调用 `switchCamera` 会报错。
-- **预览**：开流前预览仍为 Camera2；停流后预览回到 Camera2。
-- **`enableBufferAudio(true)`**：若 GenericCamera2 已在推流，会迁到 StreamBase（同一 URL），以便 `feedPcmAudio` 接入。
+- **预览**：默认空闲预览为 CameraX；显式选择 Camera2 时预览也使用 Camera2。UVC/screen 在采集前使用相机占位预览。。
+- **`enableBufferAudio(true)`**：在单路会话中替换麦克风 PCM。`enableAudio: false` 时须在开流前启用；多路推流不支持缓冲音频。
 
 ### Android：`lockExposure` / `unlockExposure` / `isExposureLocked`
 - **作用**：锁定 / 解锁 Camera2 自动曝光（避免人脸或光线导致曝光跳动）。
@@ -388,3 +388,46 @@ await controller.startVideoStreaming(url);
 ## 🚀 总结
 `rtmp_streaming` 为 Flutter 开发者提供跨平台推流与视频录制能力。  
 自 **1.0.8** 起，音视频临时静音、编码参数设置、帧率配置等 API 已在双端对齐；**2.0.1** 起 Android 可在 `CameraPreview` 挂载前安全设置编码参数（先缓存后应用）；**2.1.0** 起 Android 多路推流 / 编解码 / 视频源基于 RootEncoder 2.8.1，且 `CameraValue.isStreaming` 取代 `isStreamingVideoRtmp`。**2.1.1** 修复 Android 开流时前置被重置，并将 Android 独有控制接到 CameraX / WHIP / StreamBase 会话。iOS 仍保留播放控制与多任务相机等扩展能力，Android 保留滤镜、BT.709、RTT 与队列统计等扩展能力。
+
+
+## Android 2.2 升级与验证
+
+最低要求 Flutter **3.44** / Dart **3.12**；本次开发验证使用 Flutter 3.47.7 / Java 21。Android 构建依赖为 AGP 9.4.1、Gradle 9.8.1、Kotlin 2.4.21、AndroidX Annotation 1.11.0、SDK 37.2、Build Tools 37.0.0、NDK 30.0.16248370。RootEncoder 2.8.1、HaishinKit SPM 2.2.5 已是当前发布版本；CocoaPods 保留其最新发布的 HaishinKit 2.0.9 / SRTHaishinKit 2.0.8。
+
+默认预览切换到 CameraX。需要精确 Camera ID、曝光/白平衡锁定或手动传感器控制时，请选择 Camera2；CameraX 仅保证前后置朝向。单路推流使用各协议专用客户端，不再受 GenericStream 的公共编码子集限制。
+
+| 协议 | 视频编码 | 音频编码 |
+| --- | --- | --- |
+| RTMP / RTSP | H264、H265、AV1、VP8、VP9 | AAC、HE-AAC、OPUS、G711 |
+| SRT / UDP | H264、H265 | AAC、HE-AAC、OPUS |
+| WHIP | RootEncoder 支持的 WebRTC 编码，须服务端配合 | 默认 OPUS，也可 G711 |
+
+不兼容组合会返回错误。修改编码前须停止推流与录像；硬件编码器、服务端及录制容器也必须支持所选编码。MP4 录像优先使用兼容性较好的 H264/AAC。未显式选择音频编码时，WHIP 自动使用 OPUS。
+
+```dart
+await controller.setRtmpMetadata({'application': 'my-app', 'session': 42});
+final controls = await controller.getCameraControls();
+await controller.setZoom(2.0.clamp(controls.minZoom, controls.maxZoom));
+await controller.setAutoFocus(true);
+await controller.tapToFocus(x: 0.5, y: 0.5);
+// 已在录像/推流时：
+await controller.requestKeyFrame();
+
+// Camera2 新扩展，须相应预览已启动，数值须在设备支持范围内：
+await controller.setVideoSource(VideoSourceType.camera2);
+await controller.setManualExposure(iso: 200, exposureTimeNanos: 10000000);
+await controller.setCaptureTelemetry(true, intervalMs: 1000);
+// controller.value.event 中 eventType 为 capture_statistics，数据在 captureStatistics 中。
+await controller.setManualExposure(); // 恢复自动曝光
+await controller.setCaptureTelemetry(false);
+```
+
+RTMP 元数据须在开流前设置，只接受字符串、布尔值和有限数值，空 map 清除。重建会话后恢复静音、滤镜、叠加层和变调；队列自适应按实际配置的视频＋音频码率预算工作。多路重试/断开事件携带 `destinationId`，单一路径失败不会误停其他路径；统计和自适应由首个活动目标驱动。
+
+自定义 PCM 为有符号小端 PCM16：AAC/HE-AAC 为 32000 Hz 双声道、OPUS 为 48000 Hz 双声道、G711 为 8000 Hz 单声道，须发送完整采样帧。RootEncoder 的 IPv6、时间戳、队列和源管理修复随依赖生效；IPv6 仍需网络和目标服务端支持。
+
+屏幕采集须先挂载 CameraPreview，Activity 在前台，并于每次新会话前重新调用 `requestScreenCapture`。插件提供 MediaProjection 前台服务，启用麦克风时同时声明/使用 microphone 服务类型；停止采集或释放预览会清理服务。Android 14+ 不复用授权令牌：没有正在录像的屏幕推流在 Surface 丢失后结束，重启须重新授权。多路推流在 Surface 丢失后需要显式重启。物理摄像头录像在 Surface 丢失时结束并保存文件，摄像头推流可在 Surface 恢复后重启；本插件不提供无人值守的后台摄像头服务。
+
+示例已声明并请求 Android 17 的 `ACCESS_LOCAL_NETWORK`；宿主应用以 Android 17+ 为目标并连接局域网服务端时，也须声明和动态申请。保存应用私有目录不需要外部存储权限。RTMPS/RTSPS 已启用主机名校验，应使用与主机名匹配的证书。
+
+验证命令与英文说明一致：根目录 `flutter analyze`、`flutter test`，示例目录 `flutter test`，以及示例 Android 工程的 `:rtmp_streaming:testDebugUnitTest :rtmp_streaming:lintDebug :app:assembleDebug`。自动化覆盖状态/错误恢复、截图并发、事件传播、URL/编码组合和权限回调。编译通过不代表真机采集质量或服务端互通已验证；发布前仍须在目标设备上验证前后置切换、预览→录像→推流→停止、无音频、屏幕授权/撤销、Activity 重建、后台恢复与多路故障。此次未验证 iOS 编译。

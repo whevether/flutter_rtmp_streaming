@@ -7,7 +7,7 @@ import io.flutter.plugin.common.StandardMessageCodec
 import io.flutter.plugin.platform.PlatformView
 import io.flutter.plugin.platform.PlatformViewFactory
 
-internal class NativeViewFactory(private val activity: Activity) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
+class NativeViewFactory(var activity: Activity?) : PlatformViewFactory(StandardMessageCodec.INSTANCE) {
     var cameraNativeView: CameraNativeView? = null
     var cameraName: String = "0"
     var preset: ResolutionPreset = ResolutionPreset.low
@@ -15,8 +15,12 @@ internal class NativeViewFactory(private val activity: Activity) : PlatformViewF
     var dartMessenger: DartMessenger? = null
 
     /** Cached until CameraPreview's AndroidView creates the platform view. */
+    var pendingRtmpMetadata: Map<String, Any>? = null
     var pendingAudioBitrate: Int? = null
     var pendingVideoBitrate: Int? = null
+    var pendingVideoWidth: Int? = null
+    var pendingVideoHeight: Int? = null
+    var pendingFrameInterval: Int? = null
     var pendingFrameRate: Int? = null
     var pendingForceBt709Color: Boolean? = null
     var pendingRtmpShouldSendPings: Boolean? = null
@@ -28,7 +32,7 @@ internal class NativeViewFactory(private val activity: Activity) : PlatformViewF
     var pendingUseBufferAudio: Boolean? = null
 
     override fun create(context: Context, id: Int, args: Any?): PlatformView {
-        val view = CameraNativeView(activity, enableAudio, preset, cameraName, dartMessenger)
+        val view = CameraNativeView(requireNotNull(activity) { "Activity not attached" }, enableAudio, preset, cameraName, dartMessenger, context)
         view.applyCachedEncoderSettings(
             audioBitrate = pendingAudioBitrate,
             videoBitrate = pendingVideoBitrate,
@@ -42,6 +46,21 @@ internal class NativeViewFactory(private val activity: Activity) : PlatformViewF
             videoSource = pendingVideoSource,
             useBufferAudio = pendingUseBufferAudio,
         )
+        pendingRtmpMetadata?.let { metadata ->
+            view.setRtmpMetadata(metadata, object : io.flutter.plugin.common.MethodChannel.Result {
+                override fun success(result: Any?) {}
+                override fun error(code: String, message: String?, details: Any?) {}
+                override fun notImplemented() {}
+            })
+        }
+        if (pendingVideoWidth != null || pendingFrameInterval != null) {
+            view.setVideoSettings(null, pendingVideoWidth, pendingVideoHeight, pendingFrameInterval,
+                object : io.flutter.plugin.common.MethodChannel.Result {
+                    override fun success(result: Any?) {}
+                    override fun error(code: String, message: String?, details: Any?) {}
+                    override fun notImplemented() {}
+                })
+        }
         cameraNativeView = view
         return view
     }

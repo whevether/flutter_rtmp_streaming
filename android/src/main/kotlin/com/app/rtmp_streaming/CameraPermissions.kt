@@ -27,7 +27,7 @@ class CameraPermissions {
             callback.onResult("cameraPermission", "Camera permission request ongoing")
             return
         }
-        if (!hasCameraPermission(activity) || enableAudio && !hasAudioPermission(activity) || !hasWriteExternalStoragePermission(activity) || !hasWakeLockPermission(activity)) {
+        if (!hasCameraPermission(activity) || enableAudio && !hasAudioPermission(activity)) {
             permissionsRegistry.adddListener(
                 CameraRequestPermissionsListener(
                     object : ResultCallback {
@@ -39,7 +39,7 @@ class CameraPermissions {
             ongoing = true
             ActivityCompat.requestPermissions(
                 activity,
-                if (enableAudio) arrayOf(permission.CAMERA, permission.RECORD_AUDIO, permission.WRITE_EXTERNAL_STORAGE, permission.WAKE_LOCK) else arrayOf(permission.CAMERA, permission.WRITE_EXTERNAL_STORAGE, permission.WAKE_LOCK),
+                if (enableAudio) arrayOf(permission.CAMERA, permission.RECORD_AUDIO) else arrayOf(permission.CAMERA),
                 CAMERA_REQUEST_ID)
         } else {
             // Permissions already exist. Call the callback with success.
@@ -56,16 +56,6 @@ class CameraPermissions {
         return (ContextCompat.checkSelfPermission(activity, permission.RECORD_AUDIO)
                 == PackageManager.PERMISSION_GRANTED)
     }
-    //检查存储写入权限
-    private fun hasWriteExternalStoragePermission(activity: Activity): Boolean {
-        return (ContextCompat.checkSelfPermission(activity, permission.WRITE_EXTERNAL_STORAGE)
-                == PackageManager.PERMISSION_GRANTED)
-    }
-    //检查屏幕唤醒权限
-    private fun hasWakeLockPermission(activity: Activity): Boolean {
-        return (ContextCompat.checkSelfPermission(activity, permission.WAKE_LOCK)
-                == PackageManager.PERMISSION_GRANTED)
-    }
     //权限请求监听事件
     @VisibleForTesting
     internal class CameraRequestPermissionsListener @VisibleForTesting constructor(val callback: ResultCallback) : RequestPermissionsResultListener {
@@ -79,13 +69,14 @@ class CameraPermissions {
                 return false
             }
             alreadyCalled = true
-            if (grantResults.size == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED) {
-                callback.onResult("cameraPermission", "MediaRecorderCamera permission not granted")
-            } else if (grantResults.size > 1 && grantResults[1] != PackageManager.PERMISSION_GRANTED) {
-                callback.onResult("cameraPermission", "MediaRecorderAudio permission not granted")
-            } else {
-                callback.onResult(null, null)
+            val denied = permissions.indices.firstOrNull {
+                it >= grantResults.size || grantResults[it] != PackageManager.PERMISSION_GRANTED
             }
+            if (permissions.isEmpty() || grantResults.isEmpty()) {
+                callback.onResult("cameraPermission", "Permission request cancelled")
+            } else if (denied != null) {
+                callback.onResult("cameraPermission", "Permission denied: ${permissions[denied]}")
+            } else callback.onResult(null, null)
             return true
         }
 

@@ -41,8 +41,8 @@ object CameraUtils {
             available.maxWithOrNull(CompareSizesByArea()) ?: available.first()
         } else {
             available.minByOrNull { size ->
-                val dw = size.width - targetW
-                val dh = size.height - targetH
+                val dw = size.width.toLong() - targetW
+                val dh = size.height.toLong() - targetH
                 dw * dw + dh * dh
             } ?: available.first()
         }
@@ -90,12 +90,12 @@ object CameraUtils {
             val characteristics = cameraManager.getCameraCharacteristics(cameraName)
             details["name"] = cameraName
             val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION)
-            details["sensorOrientation"] = sensorOrientation!!
+            details["sensorOrientation"] = sensorOrientation ?: 0
             val lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING)
             when (lensFacing) {
                 CameraMetadata.LENS_FACING_FRONT -> details["lensFacing"] = "front"
                 CameraMetadata.LENS_FACING_BACK -> details["lensFacing"] = "back"
-                CameraMetadata.LENS_FACING_EXTERNAL -> details["lensFacing"] = "external"
+                else -> details["lensFacing"] = "external"
             }
             cameras.add(details)
         }

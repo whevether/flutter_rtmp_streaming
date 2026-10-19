@@ -1,3 +1,15 @@
+## 2.2.0
+
+- 合并 PR #14，并修复 CameraX 空闲预览直接录制时缺少音频准备、截图读取旧渲染器、编码器/视频源未释放、Surface 销毁及录像/推流状态相互误清等问题。
+- 单路推流改用各协议专用的 StreamBase 客户端，让 RTMP/RTSP 真正支持 AV1、VP8、VP9 及新增音频编码；在替换会话前校验 URL 和编码组合。WHIP 默认 OPUS，按编码选择采样率与声道。
+- Android 新增 `setRtmpMetadata`、`requestKeyFrame`、`getCameraControls`、`setZoom`、`setAutoFocus`、`tapToFocus`，以及基于 Camera2 自定义 CaptureRequest 的 `setManualExposure`、基于采集完成回调的限频 `setCaptureTelemetry`。
+- 分辨率与关键帧间隔在 prepare 时实际生效；重建会话后恢复静音、滤镜、叠加层和变调。修复视频叠加异步准备与播放器泄漏，自适应码率使用实际配置的总码率预算。
+- 补齐 MediaProjection 前台服务、授权取消/撤销清理；停止屏幕采集后须重新授权，避免 Android 14+ 复用采集令牌。
+- 修复权限回调、Activity 重新挂载、初始化中断清理及预览未挂载时调用一直等待的问题。隔离旧会话回调，多路推流分别重试，在事件中保留 `destinationId`。
+- 开启 RTMPS/RTSPS 主机名校验，默认关闭原生客户端日志，避免记录推流 URL/令牌。
+- 升级 AGP 9.4.1、Gradle 9.8.1（校验和）、Kotlin 2.4.21、AndroidX Annotation 1.11.0、编译 SDK 37.2；保留稳定 NDK 30.0.16248370 / Build Tools 37.0.0。更新示例依赖并固定 permission_handler 范围，最低要求 Flutter 3.44 / Dart 3.12。RootEncoder 2.8.1 和 HaishinKit SPM 2.2.5 已为当前版本；CocoaPods 保留其最新发布的 HaishinKit 2.0.9 / SRTHaishinKit 2.0.8。
+- 扩充回归测试和示例中的相机控制、编码、视频源、元数据演示。真机采集、真实服务端互通及 iOS 编译仍需对应设备/平台验证。
+
 ## 2.1.1
 
 1. **Android**：修复 `startVideoStreaming` 时前置摄像头被重置为后置（camera2 / CameraX / WHIP / StreamBase / 多路 / 录制）。
