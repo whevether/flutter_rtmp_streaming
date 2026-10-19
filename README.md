@@ -271,7 +271,7 @@ print('${stats.fps} fps, muted=${stats.isAudioMuted}');
 
 ### Android: `setForceBt709Color(bool enabled)`
 - **Purpose**: Encode with the BT.709 color matrix.
-- **When**: After `initialize`, before record/stream. Cached if `CameraPreview` is not mounted yet.
+- **When**: After `initialize`, before record/stream, including while idle preview is running. The value is cached and applied before the next encoder preparation; prepared preview encoders are not modified. Changing the value during streaming or recording fails without changing the cache; setting the same value again is safe.
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
@@ -497,7 +497,7 @@ interoperability, interruption recovery and media quality need real-device tests
 
 Playback example: `cd example && flutter run -t lib/playback.dart` (iOS).
 
-Validation: 24 Dart contract/state tests, 11 Android native tests, Android lint
+Validation: 24 Dart contract/state tests, 15 Android native tests, Android lint
 and APK assembly pass. The iOS app and three XCTest cases compile and link for
 arm64 simulator. XCTest execution is blocked on this machine by Xcode 27.1's
 `invalidDigitCount` simulator/SDK version parsing error; no live-server or

@@ -1,5 +1,6 @@
 ## 2.3.0
 
+- Fix Android BT.709 configuration after idle preview has prepared its encoder: defer color selection until the next encoder preparation, preserve settings when live changes are rejected, and allow repeated identical settings. Enable the modern Android back callback in the example manifest.
 - Add native build/source capability queries, common camera controls, typed capture presets and named Android GPU effects. Keep platform-specific capture and transport APIs explicit.
 - Preserve recording when stopping multi-streaming; normalize destination IDs and events, roll back combined starts, make stop-all idempotent, and update pause state only after success.
 - Normalize numeric statistics and units; report unavailable metrics as null. Fix iOS settings persistence, SRT bitrate mode, recorder compression settings, active-camera torch, overlay alpha/scale and snapshot framing.

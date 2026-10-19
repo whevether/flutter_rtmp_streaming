@@ -551,9 +551,11 @@ class CameraExampleHomeState extends State<CameraExampleHome>
           Text('BT.709 色彩 (RootEncoder 2.7+)'),
           Switch(
             value: _forceBt709,
-            onChanged: (v) {
-              setState(() => _forceBt709 = v);
-            },
+            onChanged: isStreaming || isRecordingVideo
+                ? null
+                : (v) {
+                    setState(() => _forceBt709 = v);
+                  },
           ),
           Text('RTMP Ping / RTT (需推流前开启)'),
           Switch(
@@ -864,6 +866,9 @@ class CameraExampleHomeState extends State<CameraExampleHome>
     }
 
     try {
+      if (Platform.isAndroid) {
+        await controller.setForceBt709Color(_forceBt709);
+      }
       videoPath = filePath;
       await controller.startVideoRecording(filePath);
       showInSnackBar('Saving video to $filePath');

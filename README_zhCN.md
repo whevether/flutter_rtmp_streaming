@@ -278,7 +278,7 @@ print('${stats.fps} fps, muted=${stats.isAudioMuted}');
 
 ### Android：`setForceBt709Color(bool enabled)`
 - **作用**：编码使用 BT.709 色彩矩阵。
-- **调用时机**：`initialize` 之后，开始录制或推流之前（预览未挂载时会先缓存）。
+- **调用时机**：`initialize` 之后、开始录制或推流之前，空闲预览已运行时也可调用。设置先缓存，等下次编码器准备前应用，不修改已准备好的预览编码器。推流或录制中修改会报错且保留原缓存；重复设置相同值安全返回。
 ```dart
 await controller.setForceBt709Color(true);
 await controller.startVideoStreaming(url);
@@ -474,7 +474,7 @@ Android 期望帧率须为正整数；无法应用的码率模式/profile 明确
 
 独立播放示例：`cd example && flutter run -t lib/playback.dart`（iOS）。
 
-本轮验证：24 项 Dart 接口/状态测试、11 项 Android 原生测试、Android lint 和 APK 构建通过。
+本轮验证：24 项 Dart 接口/状态测试、15 项 Android 原生测试、Android lint 和 APK 构建通过。
 iOS 应用及 3 项 XCTest 已通过 arm64 模拟器编译与链接；本机 Xcode 27.1 的
 `invalidDigitCount` 版本解析故障阻止 XCTest 执行，因此不将其记为运行通过。
 未进行真机或直播服务器验收。

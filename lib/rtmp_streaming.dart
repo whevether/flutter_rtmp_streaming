@@ -946,7 +946,8 @@ class CameraController extends ValueNotifier<CameraValue> {
 
   /// 使用 BT.709 色彩矩阵编码视频（RootEncoder 2.7.0+，仅 Android）。
   ///
-  /// 在 [startVideoStreaming] / 开始录制 之前调用；可与服务端色彩处理对齐。
+  /// 可在空闲预览时调用，配置于下次推流或录制的编码器准备前应用。
+  /// 推流或录制中不能修改；重复设置相同值安全返回。
   Future<void> setForceBt709Color(bool enabled) async {
     if (!value.isInitialized! || _isDisposed) {
       throw CameraException(

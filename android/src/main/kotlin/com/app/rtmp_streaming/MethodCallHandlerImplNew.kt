@@ -217,13 +217,14 @@ class MethodCallHandlerImplNew(
                 if (enabled == null) {
                     result.error("setForceBt709Color", "enabled is required", null)
                 } else {
-                    // Always cache so remounted CameraPreview keeps the value.
-                    nativeViewFactory?.pendingForceBt709Color = enabled
+                    val cached = cacheOnSuccess(result) {
+                        nativeViewFactory?.pendingForceBt709Color = enabled
+                    }
                     val view = getCameraView()
                     if (view != null) {
-                        view.setForceBt709Color(enabled, result)
+                        view.setForceBt709Color(enabled, cached)
                     } else {
-                        result.success(null)
+                        cached.success(null)
                     }
                 }
             }

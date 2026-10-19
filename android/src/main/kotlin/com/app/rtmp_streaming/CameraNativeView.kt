@@ -183,8 +183,8 @@ class CameraNativeView(
     private var pitchShiftEffect: PitchShiftEffect? = null
     /** Overlay object filter (text/image); cleared via clearOverlay */
     private var overlayFilter: BaseFilterRender? = null
-    /** RootEncoder 2.7.0+：下一帧编码使用 BT.709 色彩（在 prepare 前设置） */
-    private var forceBt709Color: Boolean = false
+    /** RootEncoder 2.7.0+：仅在编码器 prepare 前应用 BT.709 色彩配置。 */
+    private val encoderColorSettings = EncoderColorSettings()
     /** RootEncoder 2.7.0+：RTMP 周期 ping，用于 RTT（须在与 startStream 前对 RtmpStreamClient 设置） */
     private var rtmpShouldSendPings: Boolean = false
     /** 自定义音频码率（bps），在 prepareAudio 时使用 */
@@ -425,7 +425,7 @@ class CameraNativeView(
             val streamingSize = CameraUtils.computeBestPreviewSize(activity, cameraName, preset)
             val size = customVideoSize ?: (streamingSize["size"] as Size)
             val bitrateRes = streamingSize["bitrate"] as Int
-            genericCamera.forceBt709Color(forceBt709Color)
+            encoderColorSettings.applyBeforePrepare(genericCamera::forceBt709Color)
             if (!(prepareAudioEncoder() && prepareVideoEncoder(size, bitrateRes))) {
                 throw IllegalStateException("Error preparing record, This device cant do it")
             }
@@ -677,11 +677,7 @@ class CameraNativeView(
             }
         }
         if (forceBt709Color != null) {
-            this.forceBt709Color = forceBt709Color
-            try {
-                genericCamera.forceBt709Color(forceBt709Color)
-            } catch (_: Exception) {
-            }
+            encoderColorSettings.update(forceBt709Color, captureActive = false)
         }
         if (rtmpShouldSendPings != null) {
             this.rtmpShouldSendPings = rtmpShouldSendPings
@@ -974,7 +970,7 @@ class CameraNativeView(
         }
         stream.setVideoCodec(videoCodec)
         stream.setAudioCodec(audio)
-        stream.forceBt709Color(forceBt709Color)
+        encoderColorSettings.applyBeforePrepare(stream::forceBt709Color)
         stream.getStreamClient().setReTries(10)
         stream.getStreamClient().setLogs(false)
         (stream.getStreamClient() as? com.pedro.library.util.streamclient.RtspStreamClient)
@@ -2426,16 +2422,15 @@ class CameraNativeView(
             result.error("setForceBt709Color", "enabled is required", null)
             return
         }
-        forceBt709Color = enabled
-        encoderSettingsDirty = true
         try {
-            genericCamera.forceBt709Color(enabled)
-            whipStream?.forceBt709Color(enabled)
-            genericStream?.forceBt709Color(enabled)
-            multiCamera?.forceBt709Color(enabled)
+            // Idle preview already owns a prepared encoder. Cache the selection;
+            // stream start or standalone recording will prepare a fresh pipeline.
+            if (encoderColorSettings.update(enabled, isStreamingNow() || isRecordingNow())) {
+                encoderSettingsDirty = true
+            }
             result.success(null)
-        } catch (e: Exception) {
-            result.error("setForceBt709Color", e.message, null)
+        } catch (e: IllegalStateException) {
+            result.error("invalidState", e.message, null)
         }
     }
 
@@ -3154,7 +3149,7 @@ class CameraNativeView(
             multiDestinations = built
             mc.setVideoCodec(videoCodec)
             mc.setAudioCodec(audioCodec)
-            mc.forceBt709Color(forceBt709Color)
+            encoderColorSettings.applyBeforePrepare(mc::forceBt709Color)
             mc.setFpsListener { fps = it }
 
             val streamingSize = CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)
