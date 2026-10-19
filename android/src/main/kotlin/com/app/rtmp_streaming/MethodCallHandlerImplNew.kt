@@ -553,9 +553,11 @@ class MethodCallHandlerImplNew(
                 nativeViewFactory?.preset = preset
                 nativeViewFactory?.enableAudio = enableAudio
                 nativeViewFactory?.dartMessenger = dartMessenger
-                getCameraView()?.startPreview(cameraName)
-                // MethodChannel.Result must be invoked on the main thread
-                activity.runOnUiThread { result.success(reply) }
+                // CameraX lifecycle and binding must run on the main thread.
+                activity.runOnUiThread {
+                    getCameraView()?.startPreview(cameraName)
+                    result.success(reply)
+                }
             } catch (e: Exception) {
                 Log.e("TAG", "instantiateCamera failed", e)
                 activity.runOnUiThread {

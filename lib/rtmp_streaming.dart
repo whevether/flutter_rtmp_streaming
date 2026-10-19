@@ -1099,8 +1099,9 @@ class CameraController extends ValueNotifier<CameraValue> {
   ///
   /// On stream start, [VideoSourceType.camera2] and [VideoSourceType.cameraX] re-apply the
   /// current camera facing (front/back). UVC and screen have no lens facing.
-  /// Idle preview remains Camera2 until streaming starts; after stop, preview
-  /// returns to Camera2. Not combined with [startMultiStreaming] (MultiCamera2
+  /// Android idle preview uses CameraX by default and returns to the selected
+  /// preview source after stop. The preview session is recreated when streaming
+  /// starts or stops. Not combined with [startMultiStreaming] (MultiCamera2
   /// is camera2-only). For [VideoSourceType.screen], call [requestScreenCapture]
   /// first ([CameraPreview] must be mounted).
   Future<void> setVideoSource(VideoSourceType source) async {
@@ -1300,14 +1301,11 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value = value.copyWith(
-          isRecordingVideo: false,
-          isStreaming: false,
-          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopRecording',
         <String, dynamic>{},
       );
+      value = value.copyWith(isRecordingVideo: false, isRecordingPaused: false);
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
@@ -1629,14 +1627,12 @@ class CameraController extends ValueNotifier<CameraValue> {
       );
     }
     try {
-      value = value.copyWith(
-          isStreaming: false,
-          isRecordingVideo: false,
-          clearStreamingProtocol: true);
       await _channel.invokeMethod<void>(
         'stopStreaming',
         <String, dynamic>{},
       );
+      value = value.copyWith(
+          isStreaming: false, isStreamingPaused: false, clearStreamingProtocol: true);
     } on PlatformException catch (e) {
       throw CameraException(e.code, e.message);
     }
