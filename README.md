@@ -1,5 +1,9 @@
 # rtmp_streaming
 
+Preview geometry uses **displayed** pixel dimensions: `controller.value.aspectRatio` is width / height. Listen to the controller to rebuild layout after rotation or capture-preset changes. Both native backends apply their own camera orientation (`previewQuarterTurns` is normally zero); do not manually swap `previewSize` or rotate it again. Explicit encoding sizes are preserved; an active output keeps its encoded dimensions until restarted. Start/stop/dispose operations are serialized: duplicate starts fail with `operationInProgress`, and stop/dispose wait for any outstanding native start and cleanup.
+
+Apps built with Xcode 27 must adopt the UIScene lifecycle. Follow [Flutter’s migration guide](https://docs.flutter.dev/release/breaking-changes/uiscenedelegate); the example registers plugins in `didInitializeImplicitFlutterEngine` and uses `FlutterSceneDelegate`.
+
 ## 📖 Overview
 `rtmp_streaming` is a Flutter plugin that provides unified streaming and video recording for **Android** and **iOS**.
 
@@ -425,7 +429,7 @@ Tests cover controller state/failure handling, snapshot overlap, event propagati
 
 Dependency sources: [RootEncoder releases](https://github.com/pedroSG94/RootEncoder/releases), [HaishinKit releases](https://github.com/HaishinKit/HaishinKit.swift/releases), [CocoaPods HaishinKit](https://cocoapods.org/pods/HaishinKit), [CocoaPods SRTHaishinKit](https://cocoapods.org/pods/SRTHaishinKit). SPM remains at HaishinKit 2.2.5; CocoaPods installation is unsupported: its final SDK releases lack the RTMP/RTC modules used here. Enable Flutter SPM.
 
-## Cross-platform contract (2.3.0)
+## Cross-platform contract (3.0.0)
 
 **iOS requires Swift Package Manager and Xcode with Swift 6.** Run
 `flutter config --enable-swift-package-manager`, `flutter clean`, then

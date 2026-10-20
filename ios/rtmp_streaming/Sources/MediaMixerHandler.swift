@@ -20,14 +20,75 @@ final class MediaMixerHandler: NSObject {
   private var lastCaptureSize: CGSize = .zero
   private var explicitCanvas: CGSize?
   
-  override init() {
-    super.init()
-#if canImport(UIKit)
-    NotificationCenter.default.addObserver(self, selector: #selector(on(_:)), name: UIDevice.orientationDidChangeNotification, object: nil)
-#endif
+  @MainActor var orientationProvider: () -> AVCaptureVideoOrientation = { .portrait }
+  @MainActor var previewGeometryChanged: ((CGSize) -> Void)?
+  @MainActor private var orientationTask: Task<Void, Never>?
+  @MainActor private var requestedOrientation: AVCaptureVideoOrientation?
+  @MainActor private var appliedOrientation: AVCaptureVideoOrientation = .portrait
+  @MainActor private var geometryDisposed = false
+  @MainActor private var geometryGeneration = 0
+
+  @MainActor
+  static func orientedSize(_ size: CGSize, orientation: AVCaptureVideoOrientation) -> CGSize {
+    let short = min(size.width, size.height)
+    let long = max(size.width, size.height)
+    return isPortrait(orientation) ? CGSize(width: short, height: long) : CGSize(width: long, height: short)
   }
-  
-  deinit { NotificationCenter.default.removeObserver(self) }
+
+  @MainActor
+  func requestOrientationUpdate(force: Bool = false) {
+    guard !geometryDisposed else { return }
+    let orientation = orientationProvider()
+    guard force || requestedOrientation != orientation else { return }
+    requestedOrientation = orientation
+    geometryGeneration += 1
+    let previous = orientationTask
+    previous?.cancel()
+    orientationTask = Task { [weak self] in
+      // Serialize mixer/canvas changes; cancelled predecessors cannot overtake us.
+      await previous?.value
+      guard let self, !Task.isCancelled, !geometryDisposed else { return }
+      await mixer.setVideoOrientation(orientation)
+      guard !Task.isCancelled, !geometryDisposed else { return }
+      let size = Self.orientedSize(lastCaptureSize, orientation: orientation)
+      let displaySize = await updatePreviewCanvas(size: size)
+      guard !Task.isCancelled, !geometryDisposed else { return }
+      appliedOrientation = orientation
+      if displaySize.width > 1, displaySize.height > 1 {
+        texture?.bounds = displaySize
+        previewGeometryChanged?(displaySize)
+      }
+    }
+  }
+
+  @MainActor
+  func orientedCaptureSize() async -> CGSize {
+    requestOrientationUpdate(force: true)
+    // A layout callback may replace the task while we await it.
+    while let task = orientationTask {
+      let generation = geometryGeneration
+      await task.value
+      if geometryGeneration == generation { break }
+    }
+    return Self.orientedSize(lastCaptureSize, orientation: appliedOrientation)
+  }
+
+  @ScreenActor
+  private func updatePreviewCanvas(size: CGSize) -> CGSize {
+    guard screenConfiguredForOverlay else { return size }
+    let canvas = explicitCanvas ?? size
+    if canvas.width > 1, canvas.height > 1 { mixer.screen.size = canvas }
+    return canvas
+  }
+
+  @MainActor
+  func stopGeometryUpdates() async {
+    geometryDisposed = true
+    orientationTask?.cancel()
+    await orientationTask?.value
+    orientationTask = nil
+    previewGeometryChanged = nil
+  }
 
   func addOutput(_ output: any MediaMixerOutput, startRunning: Bool = false) async {
     await mixer.addOutput(output)
@@ -48,6 +109,7 @@ final class MediaMixerHandler: NSObject {
   }
   
   func dispose()  async{
+    await stopGeometryUpdates()
     await clearOverlay()
     await mixer.stopCapturing()
     await mixer.stopRunning()
@@ -55,38 +117,10 @@ final class MediaMixerHandler: NSObject {
     _ = try? await mixer.attachAudio(nil, track: 0)
   }
   
-#if canImport(UIKit)
-  @objc
-  private func on(_ notification: Notification) {
-    
-    var orientation: AVCaptureVideoOrientation?
-    
-    if #available(iOS 13.0, *) {
-      if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene {
-        orientation = DeviceUtil.videoOrientation(by: windowScene.interfaceOrientation)
-      }
-    } else {
-      orientation = DeviceUtil.videoOrientation(by: UIApplication.shared.statusBarOrientation)
-    }
-    
-    guard let videoOrientation = orientation else { return}
-    Task {
-      await mixer.setVideoOrientation(videoOrientation)
-      // Keep offscreen canvas matched to interface orientation while overlay is active.
-      if screenConfiguredForOverlay && explicitCanvas == nil {
-        await Self.applyOverlayScreenGeometry(
-          mixer: mixer,
-          texture: texture,
-          orientation: videoOrientation
-        )
-      }
-    }
-  }
-#endif
-
   /// Map a normalized aspect-fill preview point to the unrotated sensor space.
+  @MainActor
   func captureDevicePoint(x: Double, y: Double) -> CGPoint {
-    let portrait = Self.isPortrait(Self.currentInterfaceOrientation())
+    let portrait = Self.isPortrait(appliedOrientation)
     let source = portrait ? CGSize(width: lastCaptureSize.height, height: lastCaptureSize.width) : lastCaptureSize
     let viewport = texture?.bounds ?? source
     guard source.width > 0, source.height > 0, viewport.width > 0, viewport.height > 0 else { return CGPoint(x: x, y: y) }
@@ -94,7 +128,7 @@ final class MediaMixerHandler: NSObject {
     var px = (CGFloat(x) * viewport.width + (source.width * scale - viewport.width) / 2) / (source.width * scale)
     let py = (CGFloat(y) * viewport.height + (source.height * scale - viewport.height) / 2) / (source.height * scale)
     if activeVideoDevice?.position == .front { px = 1 - px }
-    switch Self.currentInterfaceOrientation() {
+    switch appliedOrientation {
     case .portrait: return CGPoint(x: py, y: 1 - px)
     case .portraitUpsideDown: return CGPoint(x: 1 - py, y: px)
     case .landscapeLeft: return CGPoint(x: 1 - px, y: 1 - py)
@@ -170,7 +204,7 @@ final class MediaMixerHandler: NSObject {
   }
   //设置屏幕大小
   @ScreenActor
-  func setScreenSettings(width: NSNumber?,height: NSNumber?)->Int64? {
+  func setScreenSettings(width: NSNumber?,height: NSNumber?) async -> Int64? {
     if(width == nil || height == nil){
       return nil
     }
@@ -178,6 +212,10 @@ final class MediaMixerHandler: NSObject {
     guard size.width > 0, size.height > 0 else { return nil }
     explicitCanvas = size
     mixer.screen.size = size
+    if screenConfiguredForOverlay {
+      texture?.bounds = size
+      await notifyPreviewGeometry()
+    }
     return texture?.textureId
   }
   
@@ -223,9 +261,10 @@ final class MediaMixerHandler: NSObject {
 #else
     guard let device = AVCaptureDevice.devices(for: .video).first else { throw CameraSetupError.noDevice }
 #endif
+    _ = await orientedCaptureSize()
     try await mixer.attachVideo(device, track: 0)
     activeVideoDevice = device
-    guard let resolution = resolution else { return lastCaptureSize }
+    guard let resolution = resolution else { return await orientedCaptureSize() }
 
     if let presetString = Self.sessionPresetString(for: resolution) {
       try await setSessionPreset(sessionPreset: presetString)
@@ -244,7 +283,7 @@ final class MediaMixerHandler: NSObject {
     }
     let size = Self.targetSize(for: resolution, device: device)
     lastCaptureSize = size
-    return size
+    return await orientedCaptureSize()
   }
 
 #if os(iOS)
@@ -270,17 +309,6 @@ final class MediaMixerHandler: NSObject {
   }
 
 #endif
-
-  private static func currentInterfaceOrientation() -> AVCaptureVideoOrientation {
-#if canImport(UIKit)
-    if #available(iOS 13.0, *),
-       let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-       let orientation = DeviceUtil.videoOrientation(by: windowScene.interfaceOrientation) {
-      return orientation
-    }
-#endif
-    return .portrait
-  }
 
   private static func isPortrait(_ orientation: AVCaptureVideoOrientation) -> Bool {
     orientation == .portrait || orientation == .portraitUpsideDown
@@ -309,12 +337,13 @@ final class MediaMixerHandler: NSObject {
   @ScreenActor
   private func ensureOverlayScreenConfigured() async {
     guard !screenConfiguredForOverlay else { return }
-    let orientation = Self.currentInterfaceOrientation()
+    let captureSize = await orientedCaptureSize()
+    let orientation = await appliedOrientation
     await mixer.setVideoOrientation(orientation)
 
     // Prefer capture target size when texture bounds are still unset.
     if (texture?.bounds.width ?? 0) < 2, lastCaptureSize.width > 1 {
-      texture?.bounds = lastCaptureSize
+      texture?.bounds = captureSize
     }
     if let explicitCanvas {
       mixer.screen.size = explicitCanvas
@@ -327,6 +356,7 @@ final class MediaMixerHandler: NSObject {
     videoMixerSettings.mode = .offscreen
     await mixer.setVideoMixerSettings(videoMixerSettings)
     screenConfiguredForOverlay = true
+    await notifyPreviewGeometry()
   }
 
   @ScreenActor
@@ -348,6 +378,11 @@ final class MediaMixerHandler: NSObject {
       object.horizontalAlignment = .center
       object.verticalAlignment = .middle
     }
+  }
+
+  @ScreenActor
+  func outputCanvasSize(fallback: CGSize) -> CGSize {
+    screenConfiguredForOverlay ? (explicitCanvas ?? fallback) : fallback
   }
 
   /// Current offscreen canvas size (valid after overlay is configured).
@@ -422,10 +457,17 @@ final class MediaMixerHandler: NSObject {
       var videoMixerSettings = await mixer.videoMixerSettings
       videoMixerSettings.mode = .passthrough
       await mixer.setVideoMixerSettings(videoMixerSettings)
-      if lastCaptureSize.width > 1 {
-        texture?.bounds = lastCaptureSize
-      }
       screenConfiguredForOverlay = false
+      let size = await orientedCaptureSize()
+      if size.width > 1 { texture?.bounds = size }
+      await notifyPreviewGeometry()
+    }
+  }
+
+  @MainActor
+  private func notifyPreviewGeometry() {
+    if let size = texture?.bounds, size.width > 1, size.height > 1, !geometryDisposed {
+      previewGeometryChanged?(size)
     }
   }
 

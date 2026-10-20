@@ -168,6 +168,13 @@ class CameraNativeView(
     private var selectedPitch = 1.0
     private var manualIso: Int? = null
     private var manualExposureNanos: Long? = null
+    private data class SavedCameraControls(
+        var zoom: Float? = null, var autoFocus: Boolean? = null,
+        var exposureLocked: Boolean? = null, var whiteBalanceLocked: Boolean? = null,
+        var torch: Boolean? = null
+    )
+    private val savedCameraControls = mutableMapOf<String, SavedCameraControls>()
+    private fun selectedControls() = savedCameraControls.getOrPut(cameraName) { SavedCameraControls() }
     private var captureTelemetryEnabled = false
     private var captureTelemetryIntervalMs = 1000L
     private var filterPlayer: MediaPlayer? = null
@@ -463,7 +470,23 @@ class CameraNativeView(
     }
 
     override fun surfaceChanged(p0: SurfaceHolder, p1: Int, p2: Int, p3: Int) {
-        // TODO("Not yet implemented")
+        val rotation = CameraHelper.getCameraOrientation(getActivity() ?: glView.context)
+        val stream = whipStream ?: genericStream
+        if (stream != null && p2 > 0 && p3 > 0) {
+            stream.getGlInterface().setPreviewResolution(p2, p3)
+            stream.setOrientation(if (rotation == 0) 270 else rotation - 90)
+            stream.getGlInterface().setPreviewIsPortrait(rotation == 90 || rotation == 270)
+        }
+        publishPreviewGeometry()
+    }
+
+    private fun publishPreviewGeometry() {
+        runCatching {
+            val size = customVideoSize ?: (CameraUtils.computeBestPreviewSize(getActivity(), cameraName, preset)["size"] as Size)
+            val (width, height) = PreviewGeometry.dimensions(size.width, size.height,
+                CameraHelper.getCameraOrientation(getActivity() ?: glView.context))
+            dartMessenger?.sendPreviewGeometry(width, height)
+        }.onFailure { Log.w("CameraNativeView", "Unable to report preview geometry", it) }
     }
 
     override fun surfaceDestroyed(p0: SurfaceHolder) {
@@ -992,6 +1015,36 @@ class CameraNativeView(
         restoreEffects()
     }
 
+    private fun restoreCameraControls() {
+        val controls = savedCameraControls[cameraName] ?: return
+        // One unsupported control must not prevent restoration of the others.
+        fun restore(action: () -> Unit) {
+            runCatching(action).onFailure { Log.w("CameraNativeView", "Camera control unavailable after recreation", it) }
+        }
+        when (val source = activeVideoSource()) {
+            is Camera2Source -> {
+                controls.zoom?.let { restore { source.setZoom(it.coerceIn(source.getZoomRange().lower, source.getZoomRange().upper)) } }
+                controls.autoFocus?.let { restore { if (it) source.enableAutoFocus() else source.disableAutoFocus() } }
+                controls.exposureLocked?.let { restore { if (it) source.enableExposureLock() else source.disableExposureLock() } }
+                controls.whiteBalanceLocked?.let { restore { if (it) source.enableWhiteBalanceLock() else source.disableWhiteBalanceLock() } }
+                controls.torch?.let { if (source.getCameraFacing() == BACK) restore { if (it) source.enableLantern() else source.disableLantern() } }
+            }
+            is CameraXSource -> {
+                controls.zoom?.let { restore { source.setZoom(it.coerceIn(source.getZoomRange().lower, source.getZoomRange().upper)) } }
+                controls.autoFocus?.let { restore { if (it) source.enableAutoFocus() else source.disableAutoFocus() } }
+                controls.torch?.let { if (source.getCameraFacing() == CameraMetadata.LENS_FACING_BACK) restore { if (it) source.enableLantern() else source.disableLantern() } }
+            }
+            null -> {
+                val camera = multiCamera ?: genericCamera
+                controls.zoom?.let { restore { camera.setZoom(it.coerceIn(camera.zoomRange.lower, camera.zoomRange.upper)) } }
+                controls.autoFocus?.let { restore { if (it) camera.enableAutoFocus() else camera.disableAutoFocus() } }
+                controls.exposureLocked?.let { restore { if (it) camera.enableExposureLock() else camera.disableExposureLock() } }
+                controls.whiteBalanceLocked?.let { restore { if (it) camera.enableWhiteBalanceLock() else camera.disableWhiteBalanceLock() } }
+                controls.torch?.let { if (camera.cameraFacing == BACK) restore { if (it) camera.enableLantern() else camera.disableLantern() } }
+            }
+        }
+    }
+
     private fun releaseFilterPlayer() {
         filterPlayer?.release()
         filterPlayer = null
@@ -1000,6 +1053,8 @@ class CameraNativeView(
     }
 
     private fun restoreEffects() {
+        restoreCameraControls()
+        publishPreviewGeometry()
         val filterType = currentFilterType
         val overlay = restoreOverlay
         currentFilter = null
@@ -1312,6 +1367,7 @@ class CameraNativeView(
                     return
                 }
             }
+            selectedControls().torch = isEnable
             result.success(null)
         } catch (e: CameraAccessException) {
             result.error("switchFlashLightFailed", e.message, null)
@@ -1367,6 +1423,8 @@ class CameraNativeView(
                 else -> genericCamera.switchCamera(cameraId)
             }
             cameraName = cameraId
+            restoreCameraControls()
+            publishPreviewGeometry()
             result.success(null)
         } catch (e: CameraAccessException) {
             result.error("switchCameraFailed", e.message, null)
@@ -2355,6 +2413,7 @@ class CameraNativeView(
     fun lockExposure(result: MethodChannel.Result) {
         try {
             val ok = enableExposureLockOnActiveCamera()
+            if (ok) selectedControls().exposureLocked = true
             result.success(ok)
         } catch (e: Exception) {
             result.error("lockExposure", e.message, null)
@@ -2364,6 +2423,7 @@ class CameraNativeView(
     fun unlockExposure(result: MethodChannel.Result) {
         try {
             disableExposureLockOnActiveCamera()
+            selectedControls().exposureLocked = false
             result.success(null)
         } catch (e: Exception) {
             result.error("unlockExposure", e.message, null)
@@ -2550,6 +2610,7 @@ class CameraNativeView(
         if (genericStream != null) stopGenericStreamInternal(restorePreview = false)
         if (genericCamera.isOnPreview) genericCamera.stopCamera()
         if (isSurfaceCreated) startPreview(cameraName)
+        publishPreviewGeometry()
         result.success(null)
     }
 
@@ -2600,6 +2661,7 @@ class CameraNativeView(
                 }
                 else -> throw IllegalStateException("Requires an active Camera2 or CameraX source")
             }
+            selectedControls().zoom = zoom
             result.success(null)
         } catch (e: Exception) {
             result.error("setZoom", e.message, null)
@@ -2613,7 +2675,10 @@ class CameraNativeView(
             else -> false
         }
         if (enabled == null || !success) result.error("setAutoFocus", "Autofocus unavailable", null)
-        else result.success(null)
+        else {
+            selectedControls().autoFocus = enabled
+            result.success(null)
+        }
     }
 
     fun tapToFocus(x: Double?, y: Double?, result: MethodChannel.Result) {
@@ -2701,7 +2766,9 @@ class CameraNativeView(
 
     fun lockWhiteBalance(result: MethodChannel.Result) {
         try {
-            result.success(enableWhiteBalanceLockOnActiveCamera())
+            val ok = enableWhiteBalanceLockOnActiveCamera()
+            if (ok) selectedControls().whiteBalanceLocked = true
+            result.success(ok)
         } catch (e: Exception) {
             result.error("lockWhiteBalance", e.message, null)
         }
@@ -2710,6 +2777,7 @@ class CameraNativeView(
     fun unlockWhiteBalance(result: MethodChannel.Result) {
         try {
             disableWhiteBalanceLockOnActiveCamera()
+            selectedControls().whiteBalanceLocked = false
             result.success(null)
         } catch (e: Exception) {
             result.error("unlockWhiteBalance", e.message, null)

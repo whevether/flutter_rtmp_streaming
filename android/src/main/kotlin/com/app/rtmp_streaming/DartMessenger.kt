@@ -9,6 +9,7 @@ import java.util.*
 
 class DartMessenger(messenger: BinaryMessenger, eventChannelId: Int) {
     private var eventSink: EventSink? = null
+    private var previewGeometry: Map<String, Any>? = null
     private val channel = EventChannel(messenger, "com.rtmp_streaming.eventchannel/$eventChannelId")
 
     fun dispose() {
@@ -38,6 +39,13 @@ class DartMessenger(messenger: BinaryMessenger, eventChannelId: Int) {
         eventSink?.success(event)
     }
 
+    fun sendPreviewGeometry(width: Int, height: Int) {
+        val event = mapOf("eventType" to "preview_geometry_changed", "previewWidth" to width,
+            "previewHeight" to height, "previewQuarterTurns" to 0)
+        previewGeometry = event
+        eventSink?.success(event)
+    }
+
     fun sendCaptureStatistics(values: Map<String, Any?>) {
         eventSink?.success(mapOf("eventType" to "capture_statistics", "captureStatistics" to values))
     }
@@ -47,6 +55,7 @@ class DartMessenger(messenger: BinaryMessenger, eventChannelId: Int) {
                 object : EventChannel.StreamHandler {
                     override fun onListen(arguments: Any?, sink: EventSink) {
                         eventSink = sink
+                        previewGeometry?.let(sink::success)
                     }
 
                     override fun onCancel(arguments: Any?) {

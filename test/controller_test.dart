@@ -376,6 +376,7 @@ void main() {
         }
         return null;
       });
+      controller.value = const CameraValue.uninitialized();
       await controller.initialize(CameraDescription(name: '0'));
       await Future<void>.delayed(Duration.zero);
       controller.value = controller.value.copyWith(
@@ -405,6 +406,7 @@ void main() {
       if (call.method == 'dispose') nativeDisposals++;
       return null;
     });
+    controller.value = const CameraValue.uninitialized();
     final initializing = controller.initialize(CameraDescription(name: '0'));
     final disposing = controller.dispose();
     reply.complete({

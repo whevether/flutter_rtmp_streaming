@@ -84,12 +84,14 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
   private var multiEndpoints: [MultiEndpoint] = []
   private var enableAudio: Bool = true
   private var isRecording = false
+  private var isPublishing = false
   private var isPlayback = false
   private var playbackAudioPlayer: AudioPlayer?
   private var desiredVideoSettings = VideoCodecSettings()
   private var desiredAudioSettings = AudioCodecSettings()
   private var explicitVideoSize = false
   private var telemetryTimer: Timer?
+  private var geometryObserver: PreviewGeometryObserver?
 
   // 插件注册
   private(set) var registrar: FlutterPluginRegistrar?
@@ -121,6 +123,10 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
 
   //销毁所有
   private func dispose()async{
+    isPublishing = false
+    geometryObserver?.detach()
+    geometryObserver = nil
+    await mixer?.stopGeometryUpdates()
     telemetryTimer?.invalidate()
     telemetryTimer = nil
     subscription = nil
@@ -153,6 +159,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
   }
   //关闭连接与视频流
   private func stopStreaming()async->FlutterError?{
+    isPublishing = false
     do{
       sessionGeneration += 1
       subscription = nil
@@ -281,6 +288,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       let stream = RTMPStream(connection: connection)
       if mixer == nil {
         mixer = MediaMixerHandler()
+        installGeometryObserver()
       }
       await mixer?.addOutput(stream, startRunning: false)
       rtmpStream = stream
@@ -302,7 +310,8 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           "textureId": texture.textureId,
           "eventId": eventId,
           "previewWidth": size.width,
-          "previewHeight": size.height
+          "previewHeight": size.height,
+          "previewQuarterTurns": 0
         ]
       } else {
         let textureResult = HKStreamFlutterTexture(registry: registry)
@@ -317,7 +326,8 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           "textureId": texture?.textureId,
           "eventId": eventId,
           "previewWidth": size.width,
-          "previewHeight": size.height
+          "previewHeight": size.height,
+          "previewQuarterTurns": 0
         ]
       }
     }else {
@@ -325,6 +335,32 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
     }
   }
   
+  private func installGeometryObserver() {
+    guard let mixer, let host = registrar?.viewController else { return }
+    mixer.orientationProvider = { [weak host] in
+      guard let orientation = host?.view.window?.windowScene?.interfaceOrientation else { return .portrait }
+      return DeviceUtil.videoOrientation(by: orientation) ?? .portrait
+    }
+    mixer.previewGeometryChanged = { [weak self] size in self?.emitPreviewGeometry(size) }
+    let observer = PreviewGeometryObserver()
+    observer.onGeometryChanged = { [weak mixer] in mixer?.requestOrientationUpdate() }
+    observer.attach(to: host)
+    geometryObserver = observer
+  }
+
+  private func emitPreviewGeometry(_ size: CGSize) {
+    emitEvent(["eventType": "preview_geometry_changed", "previewWidth": size.width,
+               "previewHeight": size.height, "previewQuarterTurns": 0])
+  }
+
+  private func refreshOrientedVideoSize() async {
+    guard !isPlayback, let mixer else { return }
+    let captureSize = await mixer.orientedCaptureSize()
+    guard !explicitVideoSize, !isRecording, !isPublishing else { return }
+    let size = await mixer.outputCanvasSize(fallback: captureSize)
+    if size.width > 1, size.height > 1 { desiredVideoSettings.videoSize = size }
+  }
+
   // 连接推流（RTMP / SRT / WHIP / WHEP）
   private func startVideoStreaming(
     url: String,
@@ -406,6 +442,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       guard let newName = name else {
         return FlutterError(code: "startVideoStreamingError", message: "publish name error", details: nil)
       }
+      if !isPlayback { await refreshOrientedVideoSize() }
       if !isPlayback, let error = await setVideoSettings(
         bitrate: frameRate,
         width: nil,
@@ -430,6 +467,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           }
         }
       }
+      if !isPlayback { isPublishing = true }
       emitEvent(["eventType": "success", "errorDescription": "Connected"])
       return nil
     } catch {
@@ -482,6 +520,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       rtcStream = stream
 
       if mode == .publish {
+        await refreshOrientedVideoSize()
         try await applySettings(to: stream)
         await mixer?.addOutput(stream, startRunning: false)
         if let error = await setVideoSettings(
@@ -513,6 +552,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
             self.emitEvent(["eventType": "success",
                              "errorDescription": "connection success"])
           case .closed:
+            self.isPublishing = false
             self.emitEvent(["eventType": "rtmp_stopped",
                              "errorDescription": "\(protocolName) closed"])
           default:
@@ -527,6 +567,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           self.emitEvent(["eventType": "rtmp_stopped", "errorDescription": "\(protocolName) disconnected"])
         }
       }
+      if mode == .publish { isPublishing = true }
       rtcMonitor = Task { [weak self] in
         var connectedOnce = false
         let deadline = Date().addingTimeInterval(30)
@@ -583,6 +624,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       srtStream = stream
       await mixer?.addOutput(stream, startRunning: false)
 
+      if !isPlayback { await refreshOrientedVideoSize() }
       if !isPlayback, let error = await setVideoSettings(
         bitrate: frameRate,
         width: nil,
@@ -599,6 +641,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       try await connection.connect(parsed.connectURL)
       await stream.publish()
       subscription = monitorSrt(connection, destinationId: nil)
+      isPublishing = true
       emitEvent(["eventType": "success",
                  "errorDescription": "connection success"])
       return nil
@@ -636,6 +679,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
     await tearDownRtcSession()
     try? await rtmpConnection?.close()
     desiredVideoSettings.bitRate = frameRate.intValue
+    await refreshOrientedVideoSize()
 
     for (index, dest) in destinations.enumerated() {
       guard let url = dest["url"] as? String else {
@@ -667,7 +711,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           endpoint.srtConnection = connection
           endpoint.srtStream = stream
           try await applySettings(to: stream)
-        await mixer?.addOutput(stream, startRunning: false)
+          await mixer?.addOutput(stream, startRunning: false)
           for option in parsed.preOptions {
             try await connection.setSocketOption(option)
           }
@@ -687,7 +731,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
           endpoint.rtmpConnection = connection
           endpoint.rtmpStream = stream
           try await applySettings(to: stream)
-        await mixer?.addOutput(stream, startRunning: false)
+          await mixer?.addOutput(stream, startRunning: false)
           try await connection.connect(connectUrl)
           _ = try await stream.publish(name)
           endpoint.statusTask = Task { [weak self, weak endpoint] in
@@ -717,6 +761,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       }
     }
     currentProtocol = "multi"
+    isPublishing = true
     return nil
   }
 
@@ -730,6 +775,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
         if state?.intValue != Int(SRTS_CONNECTED.rawValue) {
           var event: [String: Any] = ["eventType": "rtmp_stopped", "errorDescription": "SRT disconnected"]
           if let destinationId { event["destinationId"] = destinationId }
+          else { self.isPublishing = false }
           self.emitEvent(event)
           if let destinationId { _ = await self.stopStreamingDestination(id: destinationId) }
           return
@@ -755,6 +801,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
     }
     try? await endpoint.rtmpConnection?.close()
     if multiEndpoints.isEmpty {
+      isPublishing = false
       currentProtocol = "rtmp"
       emitEvent(["eventType": "rtmp_stopped", "errorDescription": "All destinations stopped"])
     }
@@ -769,6 +816,7 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
       guard desiredVideoSettings.bitRateMode == .average else {
         return FlutterError(code: "unsupportedOperation", message: "Recording supports average bit rate mode only", details: nil)
       }
+      await refreshOrientedVideoSize()
       var settings = StreamRecorder.defaultSettings
       var compression: [String: any Sendable] = [
         AVVideoAverageBitRateKey: desiredVideoSettings.bitRate,
@@ -1766,18 +1814,19 @@ public final class HaishinKitPlugin: NSObject, @preconcurrency FlutterPlugin {
     case "setCapturePreset":
       guard let args = call.arguments as? [String: Any], let preset = args["preset"] as? String,
         ["low", "medium", "high", "veryHigh", "ultraHigh", "max"].contains(preset),
-        let mixer, let device = mixer.activeVideoDevice, !isRecording else {
+        let mixer, let device = mixer.activeVideoDevice, !isRecording, !isPublishing else {
         result(FlutterError(code: "invalidState", message: "An idle camera and valid preset are required", details: nil)); return
       }
       Task {
         do {
           let size = try await mixer.attachVideo(resolution: preset, cameraId: device.uniqueID)
           var settings = desiredVideoSettings
-          settings.videoSize = size
+          settings.videoSize = await mixer.outputCanvasSize(fallback: size)
           for stream in configuredStreams() { try await stream.setVideoSettings(settings) }
           desiredVideoSettings = settings
           explicitVideoSize = false
-          texture?.bounds = size
+          texture?.bounds = settings.videoSize
+          emitPreviewGeometry(settings.videoSize)
           result(nil)
         } catch { result(FlutterError(code: "setCapturePresetError", message: error.localizedDescription, details: nil)) }
       }
@@ -1943,6 +1992,7 @@ extension HaishinKitPlugin: @preconcurrency FlutterStreamHandler {
   // MARK: FlutterStreamHandler
   public func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
     self.eventSink = events
+    if !isPlayback, let size = texture?.bounds { emitPreviewGeometry(size) }
     return nil
   }
   

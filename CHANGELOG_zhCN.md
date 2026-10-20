@@ -1,24 +1,21 @@
-## 2.3.0
+## 3.0.0
 
-- 修复 Android 空闲预览已准备编码器后设置 BT.709 报错：配置延迟到下次编码器准备前应用；运行中拒绝修改且不污染缓存，重复设置相同值安全返回。示例 Manifest 开启新版 Android 返回回调。
-- 新增原生构建与当前采集源的能力查询 `getCapabilities`，补齐双端通用相机控制、类型化采集预设及具名 Android GPU 滤镜接口。平台专属采集和传输能力明确声明支持范围。
-- 停止多路推流时保留并行录制，统一默认目标 ID 和 `destinationId` 事件；录制与推流同时启动失败时回滚网络，停止全部输出支持重复调用，暂停状态仅在原生操作成功后更新。
-- 统一统计数值转换与单位，不可用指标返回 null；修复 iOS 编码配置在新建协议流时丢失、SRT 码率模式未应用、录制压缩配置不完整、手电筒误操作默认后摄、叠加透明度与缩放不一致、截图裁切与预览不一致等问题。
-- 新增独立的 iOS `PlayerController` / `PlayerPreview` 及 RTMP/WHEP 播放示例，分离播放与采集状态；补齐设备支持时的手动曝光和采集遥测。对不支持的暂停、编码、认证和多任务相机请求明确报错，避免静默忽略参数。
-- iOS 改为必须使用 Swift Package Manager 和支持 Swift 6 的 Xcode，补齐 FlutterFramework 与 SRT/RTC 静态库链接依赖；示例移除旧 CocoaPods 集成。通过主 Actor 与方法队列管理会话，完善初始化、销毁、断线监控、录制错误、事件订阅及纹理尺寸同步。
-- 废弃无效的 OpenGL 开关、预热方法、含义不明确的音频与画布命名，以及裸整数滤镜接口，并保留兼容入口。音频开关统一为保留麦克风采集的静音语义；`setOverlayCanvas` 明确表示合成画布，不代表屏幕采集。
-
-## 2.2.0
-
-- 合并 PR #14，并修复 CameraX 空闲预览直接录制时缺少音频准备、截图读取旧渲染器、编码器/视频源未释放、Surface 销毁及录像/推流状态相互误清等问题。
-- 单路推流改用各协议专用的 StreamBase 客户端，让 RTMP/RTSP 真正支持 AV1、VP8、VP9 及新增音频编码；在替换会话前校验 URL 和编码组合。WHIP 默认 OPUS，按编码选择采样率与声道。
-- Android 新增 `setRtmpMetadata`、`requestKeyFrame`、`getCameraControls`、`setZoom`、`setAutoFocus`、`tapToFocus`，以及基于 Camera2 自定义 CaptureRequest 的 `setManualExposure`、基于采集完成回调的限频 `setCaptureTelemetry`。
-- 分辨率与关键帧间隔在 prepare 时实际生效；重建会话后恢复静音、滤镜、叠加层和变调。修复视频叠加异步准备与播放器泄漏，自适应码率使用实际配置的总码率预算。
-- 补齐 MediaProjection 前台服务、授权取消/撤销清理；停止屏幕采集后须重新授权，避免 Android 14+ 复用采集令牌。
-- 修复权限回调、Activity 重新挂载、初始化中断清理及预览未挂载时调用一直等待的问题。隔离旧会话回调，多路推流分别重试，在事件中保留 `destinationId`。
-- 开启 RTMPS/RTSPS 主机名校验，默认关闭原生客户端日志，避免记录推流 URL/令牌。
-- 升级 AGP 9.4.1、Gradle 9.8.1（校验和）、Kotlin 2.4.21、AndroidX Annotation 1.11.0、编译 SDK 37.2；保留稳定 NDK 30.0.16248370 / Build Tools 37.0.0。更新示例依赖并固定 permission_handler 范围，最低要求 Flutter 3.44 / Dart 3.12。RootEncoder 2.8.1 和 HaishinKit SPM 2.2.5 已为当前版本；CocoaPods 保留其最新发布的 HaishinKit 2.0.9 / SRTHaishinKit 2.0.8。
-- 扩充回归测试和示例中的相机控制、编码、视频源、元数据演示。真机采集、真实服务端互通及 iOS 编译仍需对应设备/平台验证。
+- 集成 PR #14，并修复 CameraX 空闲预览直接录制时缺少音频准备、截图读取旧渲染器、编码器/视频源未释放及 Surface 销毁等问题。纳入 [PR #15](https://github.com/whevether/flutter_rtmp_streaming/pull/15) 提出的方向修复，补齐 Dart/Android 显示尺寸契约。
+- **预览契约调整：**`previewSize` 表示最终显示的像素尺寸，`aspectRatio` 改为宽÷高；原生旋转、采集预设和叠加画布变化通过 `preview_geometry_changed` 同步 Flutter，原生层已处理方向，无需 Flutter 再次旋转。
+- iOS 方向绑定到承载 Flutter 页面的实际窗口 Scene；串行更新几何状态，取消过时任务，通过布局及旋转完成回调同步，替代固定延迟，销毁时终止更新。RTMP/SRT/WHIP、多路推流及单独录制在启动前统一解析自动尺寸，保留显式视频/叠加画布尺寸；活动输出的编码尺寸保持固定，重启后才选择新尺寸。
+- 串行处理相机会话操作，拒绝重复启动，保留启动过程中的停止请求，忽略销毁或断线后的过时回包。分别维护录像与网络状态，停止多路推流时保留并行录制，组合启动失败时回滚，停止全部输出支持重复调用，暂停状态仅在原生操作成功后更新；停止/销毁等待已发出的原生操作及清理完成。
+- 新增原生构建与采集源能力查询、双端通用相机控制、类型化采集预设及具名 Android GPU 滤镜。Android 新增 `setRtmpMetadata`、`requestKeyFrame`、`getCameraControls`、`setZoom`、`setAutoFocus`、`tapToFocus`、Camera2 `setManualExposure` 及限频 `setCaptureTelemetry`。对不支持的平台、硬件、暂停、编码、认证和多任务请求明确报错。
+- 单路推流使用各协议专用的 StreamBase 客户端，让 RTMP/RTSP 支持 AV1、VP8、VP9 及新增音频编码；替换会话前校验 URL 和编码组合，WHIP 默认 OPUS，并按编码选择采样率与声道。
+- 自定义分辨率与关键帧间隔在准备编码器时生效；重建管线后恢复静音、滤镜、叠加层和变调。Android 按摄像头恢复缩放、自动对焦、曝光/白平衡锁定及手电筒，缩放限制到新源支持范围，不支持的控制项跳过；Surface 尺寸变化后更新 StreamBase 预览几何。
+- 修复 Android 空闲预览已准备编码器后设置 BT.709 报错，延迟到下次编码器准备前应用；运行中拒绝修改时保留原配置，重复设置相同值安全返回。修复视频叠加异步准备和播放器资源泄漏，自适应码率采用实际配置的码率预算；示例开启新版 Android 返回回调。
+- 补齐 MediaProjection 前台服务及授权取消/撤销清理；停止屏幕采集后须重新授权，避免 Android 14+ 复用采集令牌。
+- 修复权限回调、Activity 重新挂载和初始化中断清理；补齐 Android 采集、叠加层、相机控制、PCM 和多路接口在预览未挂载时的错误回调，保留配置缓存。隔离旧会话回调及多路重试，统一目标 ID 并在事件中保留 `destinationId`。
+- 开启 RTMPS/RTSPS 主机名校验，默认关闭原生客户端日志，避免记录推流 URL/令牌。统一统计数值转换与单位，不可用指标返回 null。
+- 修复 iOS 编码配置持久化、SRT 码率模式、录制压缩配置、当前相机手电筒、叠加透明度/缩放及截图取景。新增独立的 iOS `PlayerController`/`PlayerPreview` 支持 RTMP/WHEP，分离播放与采集/录制状态。
+- **iOS 迁移要求：**必须使用 Swift Package Manager 和支持 Swift 6 的 Xcode，不再支持 CocoaPods；补齐 FlutterFramework 与 SRT/RTC 静态库链接依赖，示例移除 Pods，串行处理原生方法并完善初始化、销毁、事件订阅和纹理清理。示例迁移到 UIScene，通过 `FlutterImplicitEngineDelegate` 注册插件，支持 iOS 27 SDK。
+- 废弃无效的 OpenGL/预热开关、含义不明确的音频/画布命名及裸整数滤镜 API，保留兼容入口。音频别名统一为保留采集的编码静音语义；`setOverlayCanvas` 表示合成画布，不代表屏幕采集。
+- 升级 AGP 9.4.1、Gradle 9.8.1（校验和）、Kotlin 2.4.21、AndroidX Annotation 1.11.0、编译 SDK 37.2；保留 NDK 30.0.16248370 / Build Tools 37.0.0，更新示例依赖并固定 permission_handler 范围，最低要求 Flutter >=3.44 / Dart >=3.12。使用 RootEncoder 2.8.1 与 HaishinKit SPM 2.2.5。
+- 扩充控制器生命周期、预览尺寸、原生方法策略、URL/编码、权限和平台回归测试，完善相机控制、编码、采集源及元数据示例。双端构建和本地测试已通过，真机采集质量及真实服务端互通仍须验证。
 
 ## 2.1.1
 

@@ -3,6 +3,14 @@ import XCTest
 @testable import rtmp_streaming
 
 final class RunnerTests: XCTestCase {
+    @MainActor func testCaptureOrientationIsIndependentOfWindowAspectRatio() {
+        let capture = CGSize(width: 1280, height: 720)
+        XCTAssertEqual(MediaMixerHandler.orientedSize(capture, orientation: .portrait), CGSize(width: 720, height: 1280))
+        XCTAssertEqual(MediaMixerHandler.orientedSize(capture, orientation: .portraitUpsideDown), CGSize(width: 720, height: 1280))
+        XCTAssertEqual(MediaMixerHandler.orientedSize(capture, orientation: .landscapeLeft), capture)
+        XCTAssertEqual(MediaMixerHandler.orientedSize(capture, orientation: .landscapeRight), capture)
+    }
+
     @MainActor func testNativeCapabilitiesDoNotAdvertiseUnimplementedFeatures() {
         let plugin = HaishinKitPlugin()
         let done = expectation(description: "capabilities")

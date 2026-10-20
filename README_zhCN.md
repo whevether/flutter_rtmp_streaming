@@ -1,5 +1,9 @@
 # rtmp_streaming
 
+预览尺寸统一表示**最终显示**的像素宽高，`controller.value.aspectRatio` 为宽÷高。旋转或修改采集预设后，应监听控制器并重建布局。双端原生层已处理摄像头方向（`previewQuarterTurns` 通常为 0），不要再次手工交换 `previewSize` 的宽高或重复旋转。显式编码尺寸会保留；正在进行的输出保持编码尺寸固定，停止后重启才选择新的尺寸。启动、停止、销毁操作串行执行：重复启动返回 `operationInProgress`，停止/销毁会等待已发出的原生启动操作及清理完成。
+
+使用 Xcode 27 构建的宿主 App 须迁移到 UIScene 生命周期，参见 [Flutter 官方迁移说明](https://docs.flutter.dev/release/breaking-changes/uiscenedelegate)。示例已通过 `didInitializeImplicitFlutterEngine` 注册插件并使用 `FlutterSceneDelegate`。
+
 ## 📖 概述
 `rtmp_streaming` 是一个 Flutter 插件，为 **Android** 和 **iOS** 提供统一的推流与视频录制能力。  
 它解决了 pub.dev 上缺乏合适 Flutter 推流插件的问题：现有插件要么长期无人维护，要么依赖包过时，无法满足现代移动应用的需求。
@@ -422,7 +426,7 @@ RTMP 元数据须在开流前设置，只接受字符串、布尔值和有限数
 
 验证命令与英文说明一致：根目录 `flutter analyze`、`flutter test`，示例目录 `flutter test`，以及示例 Android 工程的 `:rtmp_streaming:testDebugUnitTest :rtmp_streaming:lintDebug :app:assembleDebug`。自动化覆盖状态/错误恢复、截图并发、事件传播、URL/编码组合和权限回调。编译通过不代表真机采集质量或服务端互通已验证；发布前仍须在目标设备上验证前后置切换、预览→录像→推流→停止、无音频、屏幕授权/撤销、Activity 重建、后台恢复与多路故障。此次未验证 iOS 编译。
 
-## 2.3.0 双端对齐与迁移
+## 3.0.0 双端对齐与迁移
 
 **iOS 改为仅支持 SPM，要求支持 Swift 6 的 Xcode。** 执行
 `flutter config --enable-swift-package-manager`、`flutter clean`、`flutter pub get`，

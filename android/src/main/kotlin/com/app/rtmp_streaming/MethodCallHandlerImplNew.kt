@@ -73,12 +73,8 @@ class MethodCallHandlerImplNew(
             result.error("activity_detached", "Activity not attached", null)
             return
         }
-        val requiresView = setOf("takePicture", "startVideoRecording", "startVideoStreaming",
-            "startVideoRecordingAndStreaming", "stopRecordingOrStreaming", "stopRecording", "stopStreaming",
-            "pauseVideoRecording", "resumeVideoRecording", "getStreamStatistics", "switchCamera",
-            "switchFlashLight", "switchAudio", "setFilter", "removeFilter", "getHasAudio", "setHasAudio",
-            "getHasVideo", "setHasVideo", "prepareForVideoStreaming")
-        if (call.method in requiresView && getCameraView() == null) {
+        // Configuration methods explicitly supporting pre-mount caching are exempt.
+        if (call.method in CameraMethodPolicy.requiresView && getCameraView() == null) {
             result.error("no_camera", "Mount CameraPreview before calling ${call.method}", null)
             return
         }
@@ -746,8 +742,10 @@ class MethodCallHandlerImplNew(
                 }
                 val reply: MutableMap<String, Any> = HashMap()
                 reply["textureId"] = textureId
-                reply["previewWidth"] = size.width
-                reply["previewHeight"] = size.height
+                val (displayWidth, displayHeight) = PreviewGeometry.dimensions(
+                    size.width, size.height, com.pedro.encoder.input.video.CameraHelper.getCameraOrientation(activity))
+                reply["previewWidth"] = displayWidth
+                reply["previewHeight"] = displayHeight
                 reply["eventId"] = id
                 reply["previewQuarterTurns"] = 0
                 Log.i(
